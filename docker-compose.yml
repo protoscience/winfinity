@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  stockview:
+    build: .
+    image: stockview-pro:latest
+    container_name: stockview-pro
+    ports:
+      - "5000:5000"
+    environment:
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - FLASK_ENV=production
+      - PORT=5000
+    volumes:
+      # Optional: persist yfinance cache
+      - stockview_cache:/root/.cache/py-yfinance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/market-overview"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  stockview_cache:
