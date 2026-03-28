@@ -1,0 +1,2 @@
+# winfinity
+Investing Helper
