@@ -175,57 +175,67 @@
   <div id="manage-modal" class="modal hidden">
     <div class="modal-inner manage-modal-inner">
       <button class="modal-close" id="manage-modal-close">&#x2715;</button>
-      <h2 style="font-size:15px;color:#d1d4dc;margin-bottom:16px">Manage Stock Lists</h2>
+      <h2 style="font-size:15px;color:#d1d4dc;margin-bottom:14px">Manage Stock Lists</h2>
 
-      <!-- Create new list -->
-      <div class="ml-new-row">
-        <input id="ml-new-list-input" type="text" placeholder="New list name…" maxlength="40"
-          onkeydown="if(event.key==='Enter') createNewList()" />
-        <button class="ml-btn ml-btn-primary" onclick="createNewList()">+ New List</button>
+      <!-- Tab switcher -->
+      <div class="manage-tabs">
+        <button class="manage-tab active" data-tab="sqlite-tab">&#128191; SQLite Lists</button>
+        <button class="manage-tab" data-tab="github-tab">&#128279; GitHub Sync</button>
       </div>
 
-      <!-- Lists -->
-      <div id="manage-lists-container"></div>
-
-      <!-- GitHub Sync -->
-      <div class="gh-section">
-        <div class="gh-section-title" onclick="this.parentElement.classList.toggle('open')">
-          <span>&#xE000; GitHub Sync</span>
-          <span class="gh-toggle-arrow">&#9660;</span>
+      <!-- SQLite Tab -->
+      <div id="sqlite-tab" class="manage-tab-panel active">
+        <!-- DB info bar -->
+        <div class="sqlite-info-bar">
+          <span id="sqlite-db-path"></span>
+          <span id="sqlite-list-count"></span>
         </div>
-        <div class="gh-body">
-          <label class="gh-label">Personal Access Token</label>
-          <input id="gh-token" type="password" placeholder="ghp_…" />
-          <label class="gh-label">Repository (owner/repo)</label>
-          <input id="gh-repo" type="text" placeholder="e.g. myuser/winfinity-config" />
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            <div>
-              <label class="gh-label">Branch</label>
-              <input id="gh-branch" type="text" placeholder="main" />
-            </div>
-            <div>
-              <label class="gh-label">File path</label>
-              <input id="gh-path" type="text" placeholder="winfinity-lists.json" />
-            </div>
-          </div>
-          <div class="gh-btn-row">
-            <button class="ml-btn ml-btn-primary" onclick="githubPush()">&#11014; Push to GitHub</button>
-            <button class="ml-btn ml-btn-secondary" onclick="githubPull()">&#11015; Pull from GitHub</button>
-          </div>
-          <p id="gh-status" style="font-size:11px;margin-top:8px;color:#787b86"></p>
-          <p style="font-size:11px;color:#4a4e5a;margin-top:4px">
-            Token needs <strong style="color:#787b86">repo</strong> scope.
-            The file is saved in your repo as JSON for version history.
-          </p>
+
+        <!-- Create new list -->
+        <div class="ml-new-row">
+          <input id="ml-new-list-input" type="text" placeholder="New list name…" maxlength="40"
+            onkeydown="if(event.key==='Enter') createNewList()" />
+          <button class="ml-btn ml-btn-primary" onclick="createNewList()">+ New List</button>
+        </div>
+
+        <!-- Lists -->
+        <div id="manage-lists-container">
+          <div class="group-loading">Loading lists from SQLite…</div>
         </div>
       </div>
+
+      <!-- GitHub Sync Tab -->
+      <div id="github-tab" class="manage-tab-panel" style="display:none">
+        <p style="font-size:12px;color:#787b86;margin-bottom:14px">
+          Push your SQLite lists to a GitHub repo as <code>winfinity-lists.json</code> for version history and cross-machine sync. Pull to restore lists from GitHub into SQLite.
+        </p>
+        <label class="gh-label">Personal Access Token</label>
+        <input id="gh-token" type="password" placeholder="ghp_…" />
+        <label class="gh-label">Repository (owner/repo)</label>
+        <input id="gh-repo" type="text" placeholder="e.g. myuser/winfinity-config" />
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:2px">
+          <div>
+            <label class="gh-label">Branch</label>
+            <input id="gh-branch" type="text" placeholder="main" />
+          </div>
+          <div>
+            <label class="gh-label">File path</label>
+            <input id="gh-path" type="text" placeholder="winfinity-lists.json" />
+          </div>
+        </div>
+        <div class="gh-btn-row">
+          <button class="ml-btn ml-btn-primary" onclick="githubPush()">&#11014; Push to GitHub</button>
+          <button class="ml-btn ml-btn-secondary" onclick="githubPull()">&#11015; Pull from GitHub</button>
+        </div>
+        <p id="gh-status" style="font-size:11px;margin-top:10px;color:#787b86"></p>
+        <p style="font-size:11px;color:#4a4e5a;margin-top:6px">
+          Token needs <strong style="color:#787b86">repo</strong> scope (Settings → Developer settings → Personal access tokens).
+        </p>
+      </div>
+
     </div>
   </div>
 
   <script src="/js/main.js"></script>
-  <script>
-    // Populate GitHub settings form when manage modal opens
-    document.getElementById('manage-lists-btn').addEventListener('click', loadGhSettingsToForm, { once: false });
-  </script>
 </body>
 </html>

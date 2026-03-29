@@ -651,10 +651,73 @@ body {
 
 /* ===== Manage Lists Modal ===== */
 .manage-modal-inner {
-  width: 560px;
-  max-height: 85vh;
+  width: 580px;
+  max-height: 88vh;
   overflow-y: auto;
 }
+
+.manage-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+.manage-tab {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.manage-tab:hover { border-color: var(--accent); color: var(--accent); }
+.manage-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.manage-tab-panel { display: none; }
+.manage-tab-panel.active { display: block; }
+
+.sqlite-info-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 12px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.sqlite-info-bar span:first-child::before {
+  content: '🗄 ';
+}
+
+.ml-error {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--red);
+  background: rgba(239,83,80,0.08);
+  border: 1px solid rgba(239,83,80,0.2);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+/* GitHub tab inputs reuse gh-label / gh-body styles but without the collapsible wrapper */
+#github-tab input {
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 7px 10px;
+  font-size: 12px;
+  outline: none;
+  margin-bottom: 2px;
+}
+#github-tab input:focus { border-color: var(--accent); }
 
 .ml-new-row {
   display: flex;
@@ -759,30 +822,7 @@ body {
 }
 .ml-add-row input:focus { border-color: var(--accent); }
 
-/* ===== GitHub Sync Section ===== */
-.gh-section {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  margin-top: 16px;
-  overflow: hidden;
-}
-.gh-section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: var(--bg-card);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  user-select: none;
-}
-.gh-section-title:hover { background: var(--bg-hover); }
-.gh-toggle-arrow { font-size: 10px; color: var(--text-muted); }
-.gh-body { display: none; padding: 12px 14px; background: var(--bg-panel); }
-.gh-section.open .gh-body { display: block; }
-
+/* ===== GitHub Sync Tab ===== */
 .gh-label {
   display: block;
   font-size: 11px;
@@ -791,17 +831,6 @@ body {
   margin-top: 10px;
 }
 .gh-label:first-child { margin-top: 0; }
-.gh-body input {
-  width: 100%;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text-primary);
-  padding: 7px 10px;
-  font-size: 12px;
-  outline: none;
-}
-.gh-body input:focus { border-color: var(--accent); }
 .gh-btn-row {
   display: flex;
   gap: 8px;

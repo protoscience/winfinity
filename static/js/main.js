@@ -191,6 +191,19 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('manage-modal').classList.add('hidden');
   });
 
+  // Manage modal tabs
+  document.querySelectorAll('.manage-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.manage-tab').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.manage-tab-panel').forEach(p => { p.style.display = 'none'; p.classList.remove('active'); });
+      btn.classList.add('active');
+      const panel = document.getElementById(btn.dataset.tab);
+      panel.style.display = 'block';
+      panel.classList.add('active');
+      if (btn.dataset.tab === 'github-tab') loadGhSettingsToForm();
+    });
+  });
+
   // Auto-refresh
   setInterval(loadMarketOverview, 60000);
   setInterval(refreshOpenGroups, 120000);
@@ -203,13 +216,33 @@ document.addEventListener('DOMContentLoaded', () => {
 let editingListId = null;
 
 async function openManageModal() {
+  // Reset to SQLite tab
+  document.querySelectorAll('.manage-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.manage-tab-panel').forEach(p => { p.style.display = 'none'; p.classList.remove('active'); });
+  document.querySelector('.manage-tab[data-tab="sqlite-tab"]').classList.add('active');
+  const sqlitePanel = document.getElementById('sqlite-tab');
+  sqlitePanel.style.display = 'block';
+  sqlitePanel.classList.add('active');
+
   document.getElementById('manage-modal').classList.remove('hidden');
   await renderManageLists();
 }
 
 async function renderManageLists() {
-  DB_LISTS = await apiFetch(`${API}/api/lists`);
   const container = document.getElementById('manage-lists-container');
+  container.innerHTML = '<div class="group-loading">Loading lists from SQLite…</div>';
+  try {
+    DB_LISTS = await apiFetch(`${API}/api/lists`);
+  } catch(e) {
+    container.innerHTML = `<div class="ml-error">Could not load lists: ${e.message}</div>`;
+    return;
+  }
+
+  // DB info bar
+  const pathEl = document.getElementById('sqlite-db-path');
+  const countEl = document.getElementById('sqlite-list-count');
+  if (pathEl) pathEl.textContent = 'winfinity.db';
+  if (countEl) countEl.textContent = `${DB_LISTS.length} lists · ${DB_LISTS.reduce((a,l) => a + l.symbols.length, 0)} stocks`;
   container.innerHTML = DB_LISTS.map(lst => `
     <div class="ml-row" id="ml-row-${lst.id}">
       <div class="ml-row-header">
