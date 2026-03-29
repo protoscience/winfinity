@@ -6,11 +6,13 @@
   <title>Winfinity — Live Market Dashboard</title>
   <link rel="stylesheet" href="/css/style.css" />
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <!-- Top Bar -->
   <header id="topbar">
     <div id="topbar-left">
+      <button id="mobile-menu-btn" class="mobile-menu-btn" title="Menu">&#9776;</button>
       <span class="logo">&#9650; Winfinity</span>
     </div>
     <div id="topbar-indices">
@@ -31,23 +33,106 @@
     <div class="modal-inner" style="max-width:420px">
       <button class="modal-close" id="settings-modal-close">&#x2715;</button>
       <h2 style="margin-bottom:16px;font-size:15px;color:#d1d4dc">API Settings</h2>
-      <label style="display:block;margin-bottom:6px;font-size:12px;color:#787b86">Finnhub API Key</label>
+
+      <p style="font-size:11px;color:#787b86;margin-bottom:12px;line-height:1.5">
+        <strong style="color:#d1d4dc">Alpaca</strong> is used for real-time prices, charts, options &amp; news.<br>
+        <strong style="color:#d1d4dc">Finnhub</strong> supplements with fundamentals &amp; company news.
+      </p>
+
+      <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">Alpaca API Key</label>
+      <input id="alpaca-key-input" type="password"
+        placeholder="Your Alpaca API key…"
+        style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" />
+
+      <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">Alpaca Secret Key</label>
+      <input id="alpaca-secret-input" type="password"
+        placeholder="Your Alpaca secret key…"
+        style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:12px;box-sizing:border-box" />
+
+      <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">Finnhub API Key <span style="color:#4a4e5a">(optional)</span></label>
       <input id="finnhub-key-input" type="password"
         placeholder="Enter your Finnhub API key…"
-        style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px" />
+        style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" />
+
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
         <input type="checkbox" id="show-key-toggle" />
-        <label for="show-key-toggle" style="font-size:12px;color:#787b86;cursor:pointer">Show key</label>
+        <label for="show-key-toggle" style="font-size:12px;color:#787b86;cursor:pointer">Show keys</label>
+      </div>
+      <hr style="border:none;border-top:1px solid #2a2e39;margin:16px 0" />
+
+      <h3 style="font-size:12px;color:#d1d4dc;margin:0 0 10px;text-transform:uppercase;letter-spacing:.05em">&#129302; AI Analysis</h3>
+      <p style="font-size:11px;color:#787b86;margin:0 0 10px;line-height:1.5">
+        When configured, predictions, options strategies and GEX analysis come from AI instead of statistical models.
+      </p>
+
+      <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">Provider</label>
+      <select id="llm-provider-select" style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box">
+        <option value="">Disabled</option>
+        <option value="openai">OpenAI (GPT-4o)</option>
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="google">Google (Gemini)</option>
+        <option value="groq">Groq (Llama / Mixtral)</option>
+        <option value="xai">xAI (Grok)</option>
+        <option value="ollama">Ollama (Local)</option>
+      </select>
+
+      <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">Model</label>
+      <select id="llm-model-select" style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box">
+        <option value="">— select provider first —</option>
+      </select>
+
+      <!-- Auth method tabs — shown for providers that support OAuth -->
+      <div id="llm-auth-method-row" style="display:none;margin-bottom:10px">
+        <label style="display:block;margin-bottom:6px;font-size:12px;color:#787b86">Authentication</label>
+        <div class="auth-method-tabs">
+          <button class="auth-tab active" data-method="apikey" onclick="switchAuthMethod('apikey')">API Key</button>
+          <button class="auth-tab" data-method="oauth" onclick="switchAuthMethod('oauth')">Google Account</button>
+        </div>
+      </div>
+
+      <!-- API key input (default) -->
+      <div id="llm-key-row">
+        <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">API Key</label>
+        <input id="llm-key-input" type="password" placeholder="Your API key…"
+          style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:4px;box-sizing:border-box" />
+        <p id="llm-apikey-hint" style="font-size:10px;color:#4a4e5a;margin:0 0 8px"></p>
+      </div>
+
+      <!-- Google OAuth row -->
+      <div id="llm-oauth-row" style="display:none">
+        <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">Google Client ID <span style="color:#4a4e5a">(from Google Cloud Console)</span></label>
+        <input id="llm-client-id" type="text" placeholder="xxxx.apps.googleusercontent.com"
+          style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" />
+        <button id="llm-google-signin-btn" onclick="signInWithGoogle()"
+          style="width:100%;background:#fff;border:none;border-radius:4px;color:#3c4043;padding:8px;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:6px">
+          <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/><path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.175 0 7.55 0 9s.348 2.825.957 4.039l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/></svg>
+          Sign in with Google
+        </button>
+        <p id="llm-oauth-status" style="font-size:11px;color:#787b86;margin:0 0 8px"></p>
+        <p style="font-size:10px;color:#4a4e5a;line-height:1.5">Enable the <strong style="color:#787b86">Generative Language API</strong> in your Google Cloud project and add <strong style="color:#787b86">http://localhost:8447</strong> to authorised JavaScript origins.</p>
+      </div>
+
+      <!-- Ollama URL -->
+      <div id="llm-ollama-row" style="display:none">
+        <label style="display:block;margin-bottom:4px;font-size:12px;color:#787b86">Ollama URL</label>
+        <input id="llm-ollama-url" type="text" value="http://localhost:11434"
+          style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" />
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input type="checkbox" id="show-key-toggle" />
+        <label for="show-key-toggle" style="font-size:12px;color:#787b86;cursor:pointer">Show keys</label>
       </div>
       <div style="display:flex;gap:8px">
         <button id="save-key-btn" style="flex:1;background:#2962ff;border:none;border-radius:4px;color:#fff;padding:8px;font-size:13px;cursor:pointer">Save</button>
-        <button id="clear-key-btn" style="background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#787b86;padding:8px 14px;font-size:13px;cursor:pointer">Clear</button>
+        <button id="clear-key-btn" style="background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#787b86;padding:8px 14px;font-size:13px;cursor:pointer">Clear All</button>
       </div>
       <p id="key-status" style="font-size:11px;color:#787b86;margin-top:10px"></p>
-      <p style="font-size:11px;color:#4a4e5a;margin-top:8px">Key is stored in your browser (localStorage) and sent with every request. Get a free key at <strong style="color:#787b86">finnhub.io</strong>.</p>
+      <p style="font-size:11px;color:#4a4e5a;margin-top:8px">All keys stored in your browser only — never sent to any server except the provider you choose.</p>
     </div>
   </div>
 
+  <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
   <div id="app">
     <!-- Left sidebar: stock list -->
     <aside id="sidebar">
@@ -56,6 +141,7 @@
           <h2>Markets</h2>
           <button id="manage-lists-btn" title="Manage lists">&#9998;</button>
         </div>
+        <select id="list-select" class="list-dropdown"></select>
         <div class="search-wrap">
           <input id="stock-search" type="text" placeholder="Search symbol…" autocomplete="off" />
         </div>
@@ -151,14 +237,81 @@
         </section>
       </div>
 
-      <!-- News / Catalysts -->
-      <section id="news-section">
-        <div class="news-tabs">
-          <button class="news-tab active" data-target="market-news">Market News</button>
-          <button class="news-tab" data-target="stock-news">Stock News</button>
+      <!-- Options Strategy Panel -->
+      <section id="options-section">
+        <div id="options-header">
+          <h3>Options Strategy</h3>
+          <div id="options-direction-badge"></div>
         </div>
-        <div id="market-news" class="news-panel active"></div>
-        <div id="stock-news" class="news-panel" style="display:none"></div>
+        <div class="options-tabs">
+          <button class="options-tab active" data-otab="strategies-panel">Strategies</button>
+          <button class="options-tab" data-otab="gex-panel">GEX Walls</button>
+          <button class="options-tab" data-otab="cpvol-panel">Call / Put Volume</button>
+        </div>
+
+        <!-- Strategies -->
+        <div id="strategies-panel" class="options-tab-panel active">
+          <div id="options-content">
+            <div class="options-placeholder">Select a stock to view options strategies</div>
+          </div>
+        </div>
+
+        <!-- GEX Walls -->
+        <div id="gex-panel" class="options-tab-panel" style="display:none">
+          <div class="chain-toolbar">
+            <div id="gex-meta-bar"></div>
+            <div class="expiry-select-wrap">
+              <label class="expiry-label">Expiry</label>
+              <select id="gex-expiry-select" class="expiry-select" onchange="onGexExpiryChange()">
+                <option value="">Loading…</option>
+              </select>
+            </div>
+          </div>
+          <div id="gex-content"><div class="options-placeholder">Select a stock to view GEX walls</div></div>
+          <div id="gex-disclaimer" class="options-disclaimer" style="display:none"></div>
+        </div>
+
+        <!-- Call / Put Volume -->
+        <div id="cpvol-panel" class="options-tab-panel" style="display:none">
+          <div class="chain-toolbar">
+            <div id="cpvol-meta-bar"></div>
+            <div class="expiry-select-wrap">
+              <label class="expiry-label">Expiry</label>
+              <select id="cpvol-expiry-select" class="expiry-select" onchange="onCpvolExpiryChange()">
+                <option value="">Loading…</option>
+              </select>
+            </div>
+          </div>
+          <div id="cpvol-content"><div class="options-placeholder">Select a stock to view call/put volume</div></div>
+        </div>
+      </section>
+
+      <!-- News Feed -->
+      <section id="news-section">
+        <div id="news-header">
+          <h3>News</h3>
+          <span id="news-symbol-label"></span>
+        </div>
+        <div id="news-feed">
+          <div class="news-tier" id="news-company">
+            <div class="news-tier-label">Company News</div>
+            <div class="news-tier-body" id="news-company-body">
+              <div class="news-placeholder">Select a stock</div>
+            </div>
+          </div>
+          <div class="news-tier" id="news-sector">
+            <div class="news-tier-label">Sector News <span id="news-sector-name"></span></div>
+            <div class="news-tier-body" id="news-sector-body">
+              <div class="news-placeholder">Select a stock</div>
+            </div>
+          </div>
+          <div class="news-tier" id="news-global">
+            <div class="news-tier-label">Global Market News</div>
+            <div class="news-tier-body" id="news-global-body">
+              <div class="news-placeholder">Loading…</div>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
   </div>
@@ -235,6 +388,11 @@
 
     </div>
   </div>
+
+  <!-- Chart hover tooltips -->
+  <div id="main-tooltip" class="chart-tooltip" style="display:none"></div>
+  <div id="rsi-tooltip"  class="chart-tooltip" style="display:none"></div>
+  <div id="macd-tooltip" class="chart-tooltip" style="display:none"></div>
 
   <script src="/js/main.js"></script>
 </body>
