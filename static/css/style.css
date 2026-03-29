@@ -201,6 +201,12 @@ body {
   color: var(--text-muted);
 }
 
+.search-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .stock-item {
   display: flex;
   align-items: center;

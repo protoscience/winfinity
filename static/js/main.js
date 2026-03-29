@@ -129,7 +129,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Search
   document.getElementById('stock-search').addEventListener('input', e => {
     const q = e.target.value.trim().toUpperCase();
-    renderGroupSidebar(q || null);
+    if (!q) { renderGroupSidebar(); return; }
+    renderGroupSidebar(q);       // instant results from loaded stocks
+    debouncedSearchFetch(q);     // then fetch from API in case it's not loaded yet
   });
 
   // Stock detail modal close
@@ -322,6 +324,9 @@ async function createNewList() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   });
+  // Auto-expand the new list in the sidebar
+  groupExpanded[name] = true;
+  groupStocks[name] = [];   // empty but loaded — won't show "Loading…"
   await renderManageLists();
   reloadSidebar();
 }
@@ -811,7 +816,12 @@ async function loadStockList() {
 async function loadGroupStocks(groupName) {
   const grp = DB_LISTS.find(l => l.name === groupName);
   const symbols = grp ? grp.symbols : buildGroupMap()[groupName];
-  if (!symbols || !symbols.length) return;
+  // Empty list: mark as loaded with empty array so it stops showing "Loading…"
+  if (!symbols || !symbols.length) {
+    groupStocks[groupName] = [];
+    renderGroupSidebar();
+    return;
+  }
   try {
     const data = await apiFetch(`${API}/api/stocks?symbols=${symbols.join(',')}`);
     groupStocks[groupName] = data.filter(d => !d.error);
@@ -822,6 +832,29 @@ async function loadGroupStocks(groupName) {
   } catch (e) { console.error('loadGroupStocks:', e); }
 }
 
+let _searchDebounceTimer = null;
+function debouncedSearchFetch(q) {
+  clearTimeout(_searchDebounceTimer);
+  _searchDebounceTimer = setTimeout(async () => {
+    // Only fetch if query looks like a ticker (1-6 uppercase letters/numbers)
+    if (!/^[A-Z0-9.\-^]{1,10}$/.test(q)) return;
+    // Skip if already loaded
+    if (allStocks.some(s => s.symbol === q)) return;
+    try {
+      const data = await apiFetch(`${API}/api/stocks?symbols=${encodeURIComponent(q)}`);
+      const valid = data.filter(d => !d.error && d.price > 0);
+      if (!valid.length) return;
+      // Merge into allStocks
+      const map = new Map(allStocks.map(s => [s.symbol, s]));
+      valid.forEach(s => map.set(s.symbol, s));
+      allStocks = [...map.values()];
+      // Re-render only if still searching same query
+      const current = document.getElementById('stock-search').value.trim().toUpperCase();
+      if (current === q) renderGroupSidebar(q);
+    } catch(e) { /* silent */ }
+  }, 400);
+}
+
 function renderGroupSidebar(searchQuery) {
   const listEl = document.getElementById('stock-list');
 
@@ -830,7 +863,10 @@ function renderGroupSidebar(searchQuery) {
     const hits = allStocks.filter(s => s.symbol.includes(q) || (s.name || '').toUpperCase().includes(q));
     listEl.innerHTML = hits.length
       ? hits.map(s => stockItemHtml(s)).join('')
-      : '<div style="padding:12px;color:#787b86;font-size:12px">No results</div>';
+      : `<div class="search-empty">
+           <div>No results for <strong>${escapeHtml(q)}</strong></div>
+           <div style="font-size:10px;margin-top:4px;color:#4a4e5a">Fetching from market…</div>
+         </div>`;
     return;
   }
 
