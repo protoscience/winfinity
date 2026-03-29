@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>StockView Pro — Live Market Dashboard</title>
+  <title>Winfinity — Live Market Dashboard</title>
   <link rel="stylesheet" href="/css/style.css" />
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -11,7 +11,7 @@
   <!-- Top Bar -->
   <header id="topbar">
     <div id="topbar-left">
-      <span class="logo">&#9650; StockView Pro</span>
+      <span class="logo">&#9650; Winfinity</span>
     </div>
     <div id="topbar-indices">
       <span class="idx-item" id="idx-spy">SPY —</span>
@@ -22,14 +22,40 @@
     </div>
     <div id="topbar-right">
       <span id="last-updated">Updating…</span>
+      <button id="settings-btn" title="API Settings">&#9881;</button>
     </div>
   </header>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-inner" style="max-width:420px">
+      <button class="modal-close" id="settings-modal-close">&#x2715;</button>
+      <h2 style="margin-bottom:16px;font-size:15px;color:#d1d4dc">API Settings</h2>
+      <label style="display:block;margin-bottom:6px;font-size:12px;color:#787b86">Finnhub API Key</label>
+      <input id="finnhub-key-input" type="password"
+        placeholder="Enter your Finnhub API key…"
+        style="width:100%;background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#d1d4dc;padding:8px 12px;font-size:13px;outline:none;margin-bottom:8px" />
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input type="checkbox" id="show-key-toggle" />
+        <label for="show-key-toggle" style="font-size:12px;color:#787b86;cursor:pointer">Show key</label>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="save-key-btn" style="flex:1;background:#2962ff;border:none;border-radius:4px;color:#fff;padding:8px;font-size:13px;cursor:pointer">Save</button>
+        <button id="clear-key-btn" style="background:#252b3b;border:1px solid #2a2e39;border-radius:4px;color:#787b86;padding:8px 14px;font-size:13px;cursor:pointer">Clear</button>
+      </div>
+      <p id="key-status" style="font-size:11px;color:#787b86;margin-top:10px"></p>
+      <p style="font-size:11px;color:#4a4e5a;margin-top:8px">Key is stored in your browser (localStorage) and sent with every request. Get a free key at <strong style="color:#787b86">finnhub.io</strong>.</p>
+    </div>
+  </div>
 
   <div id="app">
     <!-- Left sidebar: stock list -->
     <aside id="sidebar">
       <div id="sidebar-header">
-        <h2>Top 20 Stocks</h2>
+        <div class="sidebar-title-row">
+          <h2>Markets</h2>
+          <button id="manage-lists-btn" title="Manage lists">&#9998;</button>
+        </div>
         <div class="search-wrap">
           <input id="stock-search" type="text" placeholder="Search symbol…" autocomplete="off" />
         </div>
@@ -145,6 +171,61 @@
     </div>
   </div>
 
+  <!-- Manage Lists modal -->
+  <div id="manage-modal" class="modal hidden">
+    <div class="modal-inner manage-modal-inner">
+      <button class="modal-close" id="manage-modal-close">&#x2715;</button>
+      <h2 style="font-size:15px;color:#d1d4dc;margin-bottom:16px">Manage Stock Lists</h2>
+
+      <!-- Create new list -->
+      <div class="ml-new-row">
+        <input id="ml-new-list-input" type="text" placeholder="New list name…" maxlength="40"
+          onkeydown="if(event.key==='Enter') createNewList()" />
+        <button class="ml-btn ml-btn-primary" onclick="createNewList()">+ New List</button>
+      </div>
+
+      <!-- Lists -->
+      <div id="manage-lists-container"></div>
+
+      <!-- GitHub Sync -->
+      <div class="gh-section">
+        <div class="gh-section-title" onclick="this.parentElement.classList.toggle('open')">
+          <span>&#xE000; GitHub Sync</span>
+          <span class="gh-toggle-arrow">&#9660;</span>
+        </div>
+        <div class="gh-body">
+          <label class="gh-label">Personal Access Token</label>
+          <input id="gh-token" type="password" placeholder="ghp_…" />
+          <label class="gh-label">Repository (owner/repo)</label>
+          <input id="gh-repo" type="text" placeholder="e.g. myuser/winfinity-config" />
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <label class="gh-label">Branch</label>
+              <input id="gh-branch" type="text" placeholder="main" />
+            </div>
+            <div>
+              <label class="gh-label">File path</label>
+              <input id="gh-path" type="text" placeholder="winfinity-lists.json" />
+            </div>
+          </div>
+          <div class="gh-btn-row">
+            <button class="ml-btn ml-btn-primary" onclick="githubPush()">&#11014; Push to GitHub</button>
+            <button class="ml-btn ml-btn-secondary" onclick="githubPull()">&#11015; Pull from GitHub</button>
+          </div>
+          <p id="gh-status" style="font-size:11px;margin-top:8px;color:#787b86"></p>
+          <p style="font-size:11px;color:#4a4e5a;margin-top:4px">
+            Token needs <strong style="color:#787b86">repo</strong> scope.
+            The file is saved in your repo as JSON for version history.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/js/main.js"></script>
+  <script>
+    // Populate GitHub settings form when manage modal opens
+    document.getElementById('manage-lists-btn').addEventListener('click', loadGhSettingsToForm, { once: false });
+  </script>
 </body>
 </html>

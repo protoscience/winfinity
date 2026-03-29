@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 import time
 import threading
@@ -7,14 +9,20 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, send_from_directory, request as freq
 from flask_cors import CORS
 from dotenv import load_dotenv
 
 from indicators import get_all_indicators
 from predictions import predict_next_4_weeks
+from database import (
+    init_db, get_all_lists, get_list,
+    create_list, rename_list, reorder_lists, delete_list,
+    add_stock, remove_stock, export_lists, import_lists,
+)
 
 load_dotenv()
+init_db()
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
@@ -43,11 +51,17 @@ def cached(key, fn, ttl=60):
     return val
 
 
+def get_finnhub_key() -> str:
+    """Return Finnhub key: request header takes priority over env var."""
+    return freq.headers.get('X-Finnhub-Key', '').strip() or FINNHUB_API_KEY
+
+
 def finnhub_get(path: str, params: dict = None) -> dict:
-    if not FINNHUB_API_KEY:
+    key = get_finnhub_key()
+    if not key:
         return {}
     p = params or {}
-    p['token'] = FINNHUB_API_KEY
+    p['token'] = key
     try:
         r = requests.get(f'{FINNHUB_BASE}{path}', params=p, timeout=8)
         return r.json() if r.ok else {}
@@ -70,16 +84,16 @@ def index():
 
 @app.route('/api/stocks')
 def api_stocks():
-    """Top 20 stocks with price, change, P/E, volume."""
+    """Stocks with price, change, P/E, volume. Accepts ?symbols=A,B,C or defaults to top 20."""
+    raw = freq.args.get('symbols', '')
+    symbols = [s.strip().upper() for s in raw.split(',') if s.strip()] if raw else TOP_20_STOCKS
+    # Safety: cap at 40 symbols per request
+    symbols = symbols[:40]
+    cache_key = 'stocks_' + '_'.join(symbols)
+
     def fetch():
         result = []
-        # Batch download for speed
-        try:
-            tickers = yf.Tickers(' '.join(TOP_20_STOCKS))
-        except Exception:
-            tickers = None
-
-        for sym in TOP_20_STOCKS:
+        for sym in symbols:
             try:
                 ticker = get_yf_ticker(sym)
                 info = ticker.fast_info
@@ -114,15 +128,19 @@ def api_stocks():
 
         return result
 
-    data = cached('stocks_list', fetch, ttl=120)
+    data = cached(cache_key, fetch, ttl=120)
     return jsonify(data)
 
+
+VALID_PERIODS = {'1mo', '3mo', '6mo', '1y', '2y', '5y'}
 
 @app.route('/api/chart/<symbol>')
 def api_chart(symbol: str):
     """OHLCV candlestick data for a symbol."""
     symbol = symbol.upper()
-    period = '6mo'
+    period = freq.args.get('period', '6mo')
+    if period not in VALID_PERIODS:
+        period = '6mo'
 
     def fetch():
         ticker = get_yf_ticker(symbol)
@@ -142,7 +160,7 @@ def api_chart(symbol: str):
             })
         return candles
 
-    data = cached(f'chart_{symbol}', fetch, ttl=300)
+    data = cached(f'chart_{symbol}_{period}', fetch, ttl=300)
     return jsonify(data)
 
 
@@ -185,7 +203,7 @@ def api_quote(symbol: str):
 
     def fetch():
         # Try Finnhub first
-        if FINNHUB_API_KEY:
+        if get_finnhub_key():
             q = finnhub_get('/quote', {'symbol': symbol})
             if q and q.get('c'):
                 return {
@@ -297,7 +315,7 @@ def api_news():
         articles = []
 
         # Finnhub market news
-        if FINNHUB_API_KEY:
+        if get_finnhub_key():
             news = finnhub_get('/news', {'category': 'general'})
             if isinstance(news, list):
                 for item in news[:15]:
@@ -346,7 +364,7 @@ def api_company_news(symbol: str):
 
     def fetch():
         articles = []
-        if FINNHUB_API_KEY:
+        if get_finnhub_key():
             to_date = datetime.now().strftime('%Y-%m-%d')
             from_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
             news = finnhub_get('/company-news', {
@@ -469,6 +487,139 @@ def api_market_influence():
 
     data = cached('market_influence', fetch, ttl=120)
     return jsonify(data)
+
+
+# ---------------------------------------------------------------------------
+# List management endpoints
+# ---------------------------------------------------------------------------
+
+@app.route('/api/lists', methods=['GET'])
+def api_get_lists():
+    return jsonify(get_all_lists())
+
+
+@app.route('/api/lists', methods=['POST'])
+def api_create_list():
+    body = freq.get_json(silent=True) or {}
+    name = (body.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name required'}), 400
+    try:
+        lst = create_list(name)
+        return jsonify(lst), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/lists/<int:list_id>', methods=['PUT'])
+def api_rename_list(list_id: int):
+    body = freq.get_json(silent=True) or {}
+    name = (body.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name required'}), 400
+    lst = rename_list(list_id, name)
+    return (jsonify(lst), 200) if lst else (jsonify({'error': 'not found'}), 404)
+
+
+@app.route('/api/lists/reorder', methods=['POST'])
+def api_reorder_lists():
+    body = freq.get_json(silent=True) or {}
+    order = body.get('order', [])
+    if not isinstance(order, list):
+        return jsonify({'error': 'order must be array of ids'}), 400
+    return jsonify(reorder_lists(order))
+
+
+@app.route('/api/lists/<int:list_id>', methods=['DELETE'])
+def api_delete_list(list_id: int):
+    if delete_list(list_id):
+        return jsonify({'ok': True})
+    return jsonify({'error': 'not found'}), 404
+
+
+@app.route('/api/lists/<int:list_id>/stocks', methods=['POST'])
+def api_add_stock(list_id: int):
+    body = freq.get_json(silent=True) or {}
+    symbol = (body.get('symbol') or '').strip().upper()
+    if not symbol:
+        return jsonify({'error': 'symbol required'}), 400
+    lst = add_stock(list_id, symbol)
+    return (jsonify(lst), 200) if lst else (jsonify({'error': 'list not found'}), 404)
+
+
+@app.route('/api/lists/<int:list_id>/stocks/<symbol>', methods=['DELETE'])
+def api_remove_stock(list_id: int, symbol: str):
+    lst = remove_stock(list_id, symbol.upper())
+    return (jsonify(lst), 200) if lst else (jsonify({'error': 'not found'}), 404)
+
+
+# ---------------------------------------------------------------------------
+# GitHub sync endpoints
+# ---------------------------------------------------------------------------
+
+def _gh_headers(token: str) -> dict:
+    return {
+        'Authorization': f'token {token}',
+        'Accept': 'application/vnd.github.v3+json',
+    }
+
+
+@app.route('/api/github/push', methods=['POST'])
+def api_github_push():
+    token = freq.headers.get('X-Github-Token', '').strip()
+    repo  = freq.headers.get('X-Github-Repo', '').strip()
+    branch = freq.headers.get('X-Github-Branch', 'main').strip()
+    path  = freq.headers.get('X-Github-Path', 'winfinity-lists.json').strip()
+
+    if not token or not repo:
+        return jsonify({'error': 'X-Github-Token and X-Github-Repo headers required'}), 400
+
+    content = json.dumps(export_lists(), indent=2)
+    content_b64 = base64.b64encode(content.encode()).decode()
+
+    url = f'https://api.github.com/repos/{repo}/contents/{path}'
+    headers = _gh_headers(token)
+
+    # Get existing SHA (needed for update)
+    r = requests.get(url, headers=headers, params={'ref': branch}, timeout=10)
+    sha = r.json().get('sha') if r.ok else None
+
+    payload = {
+        'message': f'Update Winfinity stock lists ({datetime.now().strftime("%Y-%m-%d %H:%M")})',
+        'content': content_b64,
+        'branch': branch,
+    }
+    if sha:
+        payload['sha'] = sha
+
+    r = requests.put(url, headers=headers, json=payload, timeout=10)
+    if r.ok:
+        return jsonify({'ok': True, 'url': r.json().get('content', {}).get('html_url', '')})
+    return jsonify({'error': r.json().get('message', 'GitHub error')}), r.status_code
+
+
+@app.route('/api/github/pull', methods=['POST'])
+def api_github_pull():
+    token  = freq.headers.get('X-Github-Token', '').strip()
+    repo   = freq.headers.get('X-Github-Repo', '').strip()
+    branch = freq.headers.get('X-Github-Branch', 'main').strip()
+    path   = freq.headers.get('X-Github-Path', 'winfinity-lists.json').strip()
+
+    if not token or not repo:
+        return jsonify({'error': 'X-Github-Token and X-Github-Repo headers required'}), 400
+
+    url = f'https://api.github.com/repos/{repo}/contents/{path}'
+    r = requests.get(url, headers=_gh_headers(token), params={'ref': branch}, timeout=10)
+    if not r.ok:
+        return jsonify({'error': r.json().get('message', 'GitHub error')}), r.status_code
+
+    try:
+        content = base64.b64decode(r.json()['content']).decode()
+        data = json.loads(content)
+        lists = import_lists(data)
+        return jsonify({'ok': True, 'lists': lists})
+    except Exception as e:
+        return jsonify({'error': f'Parse error: {e}'}), 400
 
 
 if __name__ == '__main__':

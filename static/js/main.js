@@ -3,8 +3,42 @@
 // ============================================================
 
 const API = '';
+const STORAGE_KEY = 'winfinity_finnhub_key';
+
+// STOCK_GROUPS is now loaded from the DB via /api/lists
+// keyed by list id, value = { id, name, symbols[] }
+let DB_LISTS = [];   // array from /api/lists
+
+// Build a STOCK_GROUPS-compatible map from DB_LISTS
+function buildGroupMap() {
+  const map = {};
+  DB_LISTS.forEach(l => { map[l.name] = l.symbols; });
+  return map;
+}
+
+const GH_TOKEN_KEY  = 'winfinity_gh_token';
+const GH_REPO_KEY   = 'winfinity_gh_repo';
+const GH_BRANCH_KEY = 'winfinity_gh_branch';
+const GH_PATH_KEY   = 'winfinity_gh_path';
+
+function getFinnhubKey() {
+  return localStorage.getItem(STORAGE_KEY) || '';
+}
+
+function apiFetch(url, opts = {}) {
+  const key = getFinnhubKey();
+  if (key) {
+    opts.headers = Object.assign({}, opts.headers || {}, { 'X-Finnhub-Key': key });
+  }
+  return fetch(url, opts).then(r => r.json());
+}
+
 let currentSymbol = 'SPY';
 let allStocks = [];
+// groupStocks[groupName] = array of stock objects (or null = not yet loaded)
+const groupStocks = {};
+// which groups are expanded
+const groupExpanded = {};
 let mainChart = null, rsiChart = null, macdChart = null;
 let spyMiniChart = null, vixMiniChart = null;
 let candleSeries = null, volumeSeries = null;
@@ -12,6 +46,7 @@ let rsiSeries = null, rsiOB = null, rsiOS = null;
 let macdLineSeries = null, macdSignalSeries = null, macdHistSeries = null;
 let ripsterSeries = {};
 let bbSeries = {};
+let ripsterCloudCanvas = null;
 let predictionSeries = null;
 let _lastIndicatorData = null;
 let _lastPredictionData = null;
@@ -94,19 +129,270 @@ document.addEventListener('DOMContentLoaded', () => {
   // Search
   document.getElementById('stock-search').addEventListener('input', e => {
     const q = e.target.value.trim().toUpperCase();
-    renderStockList(q ? allStocks.filter(s => s.symbol.includes(q) || (s.name || '').toUpperCase().includes(q)) : allStocks);
+    renderGroupSidebar(q || null);
   });
 
-  // Modal close
+  // Stock detail modal close
   document.getElementById('modal-close').addEventListener('click', () => {
     document.getElementById('detail-modal').classList.add('hidden');
   });
 
+  // Settings modal
+  const settingsModal = document.getElementById('settings-modal');
+  const keyInput = document.getElementById('finnhub-key-input');
+  const keyStatus = document.getElementById('key-status');
+
+  document.getElementById('settings-btn').addEventListener('click', () => {
+    keyInput.value = getFinnhubKey();
+    keyStatus.textContent = getFinnhubKey() ? 'Key loaded from storage.' : 'No key saved yet.';
+    settingsModal.classList.remove('hidden');
+  });
+  document.getElementById('settings-modal-close').addEventListener('click', () => {
+    settingsModal.classList.add('hidden');
+  });
+  settingsModal.addEventListener('click', e => {
+    if (e.target === settingsModal) settingsModal.classList.add('hidden');
+  });
+  document.getElementById('show-key-toggle').addEventListener('change', e => {
+    keyInput.type = e.target.checked ? 'text' : 'password';
+  });
+  document.getElementById('save-key-btn').addEventListener('click', () => {
+    const val = keyInput.value.trim();
+    if (val) {
+      localStorage.setItem(STORAGE_KEY, val);
+      keyStatus.textContent = 'Key saved. Reloading data…';
+      keyStatus.style.color = '#26a69a';
+      setTimeout(() => {
+        settingsModal.classList.add('hidden');
+        loadMarketOverview();
+        loadStockList();
+        loadMarketNews();
+        loadMarketInfluence();
+        loadChartData(currentSymbol);
+      }, 600);
+    } else {
+      keyStatus.textContent = 'Please enter a valid key.';
+      keyStatus.style.color = '#ef5350';
+    }
+  });
+  document.getElementById('clear-key-btn').addEventListener('click', () => {
+    localStorage.removeItem(STORAGE_KEY);
+    keyInput.value = '';
+    keyStatus.textContent = 'Key cleared.';
+    keyStatus.style.color = '#787b86';
+  });
+
+  // Manage Lists modal
+  document.getElementById('manage-lists-btn').addEventListener('click', openManageModal);
+  document.getElementById('manage-modal-close').addEventListener('click', () =>
+    document.getElementById('manage-modal').classList.add('hidden'));
+  document.getElementById('manage-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('manage-modal'))
+      document.getElementById('manage-modal').classList.add('hidden');
+  });
+
   // Auto-refresh
   setInterval(loadMarketOverview, 60000);
-  setInterval(loadStockList, 120000);
+  setInterval(refreshOpenGroups, 120000);
   setInterval(() => loadChartData(currentSymbol), 300000);
 });
+
+// ============================================================
+// Manage Lists
+// ============================================================
+let editingListId = null;
+
+async function openManageModal() {
+  document.getElementById('manage-modal').classList.remove('hidden');
+  await renderManageLists();
+}
+
+async function renderManageLists() {
+  DB_LISTS = await apiFetch(`${API}/api/lists`);
+  const container = document.getElementById('manage-lists-container');
+  container.innerHTML = DB_LISTS.map(lst => `
+    <div class="ml-row" id="ml-row-${lst.id}">
+      <div class="ml-row-header">
+        <span class="ml-row-name">${escapeHtml(lst.name)}</span>
+        <span class="ml-row-count">${lst.symbols.length} stocks</span>
+        <div class="ml-row-actions">
+          <button class="ml-btn" onclick="editList(${lst.id})" title="Edit stocks">&#9998;</button>
+          <button class="ml-btn ml-btn-danger" onclick="deleteList(${lst.id}, '${escapeHtml(lst.name)}')" title="Delete list">&#x2715;</button>
+        </div>
+      </div>
+      <div class="ml-edit-panel hidden" id="ml-edit-${lst.id}">
+        <div class="ml-symbols" id="ml-symbols-${lst.id}">
+          ${lst.symbols.map(sym => `
+            <span class="ml-chip">
+              ${escapeHtml(sym)}
+              <button onclick="removeStockFromList(${lst.id}, '${sym}')" title="Remove">&times;</button>
+            </span>`).join('')}
+        </div>
+        <div class="ml-add-row">
+          <input type="text" id="ml-add-input-${lst.id}" placeholder="Add symbol (e.g. AAPL)" maxlength="10"
+            onkeydown="if(event.key==='Enter') addStockToList(${lst.id})" />
+          <button class="ml-btn ml-btn-add" onclick="addStockToList(${lst.id})">Add</button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function editList(listId) {
+  const panel = document.getElementById(`ml-edit-${listId}`);
+  if (!panel) return;
+  const isOpen = !panel.classList.contains('hidden');
+  // Close all other edit panels
+  document.querySelectorAll('.ml-edit-panel').forEach(p => p.classList.add('hidden'));
+  if (!isOpen) panel.classList.remove('hidden');
+}
+
+async function deleteList(listId, name) {
+  if (!confirm(`Delete list "${name}"?`)) return;
+  await apiFetch(`${API}/api/lists/${listId}`, { method: 'DELETE' });
+  delete groupStocks[name];
+  delete groupExpanded[name];
+  await renderManageLists();
+  await reloadSidebar();
+}
+
+async function addStockToList(listId) {
+  const input = document.getElementById(`ml-add-input-${listId}`);
+  const symbol = (input.value || '').trim().toUpperCase();
+  if (!symbol) return;
+  input.value = '';
+  await apiFetch(`${API}/api/lists/${listId}/stocks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol }),
+  });
+  await renderManageLists();
+  document.getElementById(`ml-edit-${listId}`)?.classList.remove('hidden');
+  clearGroupCache();
+  reloadSidebar();
+}
+
+async function removeStockFromList(listId, symbol) {
+  await apiFetch(`${API}/api/lists/${listId}/stocks/${symbol}`, { method: 'DELETE' });
+  await renderManageLists();
+  document.getElementById(`ml-edit-${listId}`)?.classList.remove('hidden');
+  clearGroupCache();
+  reloadSidebar();
+}
+
+async function createNewList() {
+  const input = document.getElementById('ml-new-list-input');
+  const name = (input.value || '').trim();
+  if (!name) return;
+  input.value = '';
+  await apiFetch(`${API}/api/lists`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  await renderManageLists();
+  reloadSidebar();
+}
+
+function clearGroupCache() {
+  Object.keys(groupStocks).forEach(k => delete groupStocks[k]);
+}
+
+async function reloadSidebar() {
+  DB_LISTS = await apiFetch(`${API}/api/lists`);
+  renderGroupSidebar();
+  for (const [name, expanded] of Object.entries(groupExpanded)) {
+    if (expanded) await loadGroupStocks(name);
+  }
+}
+
+// ============================================================
+// GitHub Sync
+// ============================================================
+function getGhSettings() {
+  return {
+    token:  localStorage.getItem(GH_TOKEN_KEY)  || '',
+    repo:   localStorage.getItem(GH_REPO_KEY)   || '',
+    branch: localStorage.getItem(GH_BRANCH_KEY) || 'main',
+    path:   localStorage.getItem(GH_PATH_KEY)   || 'winfinity-lists.json',
+  };
+}
+
+function saveGhSettings() {
+  localStorage.setItem(GH_TOKEN_KEY,  document.getElementById('gh-token').value.trim());
+  localStorage.setItem(GH_REPO_KEY,   document.getElementById('gh-repo').value.trim());
+  localStorage.setItem(GH_BRANCH_KEY, document.getElementById('gh-branch').value.trim() || 'main');
+  localStorage.setItem(GH_PATH_KEY,   document.getElementById('gh-path').value.trim() || 'winfinity-lists.json');
+}
+
+function loadGhSettingsToForm() {
+  const s = getGhSettings();
+  document.getElementById('gh-token').value  = s.token;
+  document.getElementById('gh-repo').value   = s.repo;
+  document.getElementById('gh-branch').value = s.branch;
+  document.getElementById('gh-path').value   = s.path;
+}
+
+async function githubPush() {
+  saveGhSettings();
+  const s = getGhSettings();
+  const statusEl = document.getElementById('gh-status');
+  statusEl.textContent = 'Pushing…';
+  statusEl.style.color = '#787b86';
+  try {
+    const res = await apiFetch(`${API}/api/github/push`, {
+      method: 'POST',
+      headers: {
+        'X-Github-Token':  s.token,
+        'X-Github-Repo':   s.repo,
+        'X-Github-Branch': s.branch,
+        'X-Github-Path':   s.path,
+      },
+    });
+    if (res.ok) {
+      statusEl.textContent = 'Pushed successfully.';
+      statusEl.style.color = '#26a69a';
+    } else {
+      statusEl.textContent = `Error: ${res.error}`;
+      statusEl.style.color = '#ef5350';
+    }
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.style.color = '#ef5350';
+  }
+}
+
+async function githubPull() {
+  saveGhSettings();
+  const s = getGhSettings();
+  const statusEl = document.getElementById('gh-status');
+  statusEl.textContent = 'Pulling…';
+  statusEl.style.color = '#787b86';
+  try {
+    const res = await apiFetch(`${API}/api/github/pull`, {
+      method: 'POST',
+      headers: {
+        'X-Github-Token':  s.token,
+        'X-Github-Repo':   s.repo,
+        'X-Github-Branch': s.branch,
+        'X-Github-Path':   s.path,
+      },
+    });
+    if (res.ok) {
+      statusEl.textContent = `Pulled ${res.lists?.length || 0} lists.`;
+      statusEl.style.color = '#26a69a';
+      clearGroupCache();
+      Object.keys(groupExpanded).forEach(k => delete groupExpanded[k]);
+      await reloadSidebar();
+      await renderManageLists();
+    } else {
+      statusEl.textContent = `Error: ${res.error}`;
+      statusEl.style.color = '#ef5350';
+    }
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.style.color = '#ef5350';
+  }
+}
 
 // ============================================================
 // Chart Init
@@ -187,15 +473,21 @@ function initCharts() {
 // ============================================================
 // Load Chart Data
 // ============================================================
+function getSelectedPeriod() {
+  const active = document.querySelector('.btn-tab[data-period].active');
+  return active ? active.dataset.period : '6mo';
+}
+
 async function loadChartData(symbol) {
   currentSymbol = symbol;
   document.getElementById('selected-symbol').textContent = symbol;
+  const period = getSelectedPeriod();
 
   try {
     const [candles, indicators, prediction] = await Promise.all([
-      fetch(`${API}/api/chart/${symbol}`).then(r => r.json()),
-      fetch(`${API}/api/indicators/${symbol}`).then(r => r.json()),
-      fetch(`${API}/api/prediction/${symbol}`).then(r => r.json()),
+      apiFetch(`${API}/api/chart/${symbol}?period=${period}`),
+      apiFetch(`${API}/api/indicators/${symbol}`),
+      apiFetch(`${API}/api/prediction/${symbol}`),
     ]);
 
     renderCandles(candles);
@@ -254,31 +546,185 @@ function renderOverlays(data) {
   ripsterSeries = {};
   Object.values(bbSeries).forEach(s => { try { mainChart.removeSeries(s); } catch(e) {} });
   bbSeries = {};
+  removeRipsterCanvas();
 
   const showRipster = document.getElementById('toggle-ripster').checked;
   const showBB = document.getElementById('toggle-bb').checked;
 
   if (showRipster && data.ripster) {
     const r = data.ripster;
-    // Fast cloud (EMA 8 & 9) — tight, high alpha
-    ripsterSeries.ema8 = addEmaLine(r.ema8, 'rgba(38,166,154,0.9)', 1);
-    ripsterSeries.ema9 = addEmaLine(r.ema9, 'rgba(38,166,154,0.9)', 1);
-    // Slow cloud (EMA 34 & 39) — trend momentum
+    // Fast cloud lines (EMA 8 & 9)
+    ripsterSeries.ema8  = addEmaLine(r.ema8,  'rgba(38,166,154,0.9)', 1);
+    ripsterSeries.ema9  = addEmaLine(r.ema9,  'rgba(38,166,154,0.9)', 1);
+    // Slow cloud lines (EMA 34 & 39)
     ripsterSeries.ema34 = addEmaLine(r.ema34, 'rgba(41,98,255,0.8)', 1.5);
     ripsterSeries.ema39 = addEmaLine(r.ema39, 'rgba(100,140,255,0.8)', 1.5);
     // Trend filter EMA 200
     ripsterSeries.ema200 = addEmaLine(r.ema200, 'rgba(249,168,37,0.9)', 2);
     // Signal lines EMA 5 & 13
-    ripsterSeries.ema5 = addEmaLine(r.ema5, 'rgba(255,255,255,0.35)', 1);
+    ripsterSeries.ema5  = addEmaLine(r.ema5,  'rgba(255,255,255,0.35)', 1);
     ripsterSeries.ema13 = addEmaLine(r.ema13, 'rgba(200,200,200,0.35)', 1);
+
+    // Draw filled cloud bands via canvas overlay
+    drawRipsterCloud(r);
   }
 
   if (showBB && data.bollinger) {
     const bb = data.bollinger;
     bbSeries.upper = addEmaLine(bb.upper, 'rgba(156,39,176,0.7)', 1);
-    bbSeries.mid = addEmaLine(bb.mid, 'rgba(156,39,176,0.5)', 1, LightweightCharts.LineStyle.Dashed);
+    bbSeries.mid   = addEmaLine(bb.mid,   'rgba(156,39,176,0.5)', 1, LightweightCharts.LineStyle.Dashed);
     bbSeries.lower = addEmaLine(bb.lower, 'rgba(156,39,176,0.7)', 1);
   }
+}
+
+// ============================================================
+// Ripster EMA Cloud — canvas fill between EMA pairs
+// ============================================================
+function removeRipsterCanvas() {
+  if (ripsterCloudCanvas) {
+    ripsterCloudCanvas.remove();
+    ripsterCloudCanvas = null;
+  }
+}
+
+function drawRipsterCloud(ripster) {
+  const container = document.getElementById('main-chart-container');
+  removeRipsterCanvas();
+
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:1';
+  canvas.width  = container.clientWidth;
+  canvas.height = container.clientHeight;
+  container.style.position = 'relative';
+  container.appendChild(canvas);
+  ripsterCloudCanvas = canvas;
+
+  function redraw() {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Fast cloud: EMA8 vs EMA9 (teal when 8>9, red when 9>8)
+    paintBand(ctx, ripster.ema8, ripster.ema9,
+      'rgba(38,166,154,0.18)', 'rgba(239,83,80,0.18)');
+
+    // Slow cloud: EMA34 vs EMA39 (blue when 34>39, purple when 39>34)
+    paintBand(ctx, ripster.ema34, ripster.ema39,
+      'rgba(41,98,255,0.15)', 'rgba(156,39,176,0.15)');
+  }
+
+  function paintBand(ctx, upper, lower, colorAbove, colorBelow) {
+    // Build a merged time map
+    const mapA = new Map(upper.map(d => [d.time, d.value]));
+    const mapB = new Map(lower.map(d => [d.time, d.value]));
+    const times = [...new Set([...mapA.keys(), ...mapB.keys()])].sort((a, b) => a - b);
+
+    // Convert each time → x pixel; each price → y pixel using chart coordinate system
+    const pts = [];
+    for (const t of times) {
+      const va = mapA.get(t);
+      const vb = mapB.get(t);
+      if (va == null || vb == null) continue;
+      try {
+        const x  = mainChart.timeScale().timeToCoordinate(t);
+        const ya = ripsterSeries.ema8  ? ripsterSeries.ema8.priceToCoordinate(va)  : null;
+        const yb = ripsterSeries.ema9  ? ripsterSeries.ema9.priceToCoordinate(vb)  : null;
+        if (x == null || ya == null || yb == null) continue;
+        pts.push({ x, ya, yb });
+      } catch (e) { /* skip */ }
+    }
+    if (pts.length < 2) return;
+
+    // Walk through points, splitting into segments where upper/lower swap
+    let i = 0;
+    while (i < pts.length - 1) {
+      const seg = [];
+      const isAbove = pts[i].ya <= pts[i].yb; // ya above yb in screen coords (y flipped)
+      seg.push(pts[i]);
+      let j = i + 1;
+      while (j < pts.length) {
+        seg.push(pts[j]);
+        const nowAbove = pts[j].ya <= pts[j].yb;
+        if (nowAbove !== isAbove) break;
+        j++;
+      }
+      if (seg.length >= 2) {
+        ctx.beginPath();
+        ctx.moveTo(seg[0].x, seg[0].ya);
+        for (let k = 1; k < seg.length; k++) ctx.lineTo(seg[k].x, seg[k].ya);
+        for (let k = seg.length - 1; k >= 0; k--) ctx.lineTo(seg[k].x, seg[k].yb);
+        ctx.closePath();
+        ctx.fillStyle = isAbove ? colorAbove : colorBelow;
+        ctx.fill();
+      }
+      i = j;
+    }
+  }
+
+  // Use ema8/ema9 series coordinates for fast cloud, ema34/ema39 for slow
+  function paintBandSlow(ctx, upper, lower, colorAbove, colorBelow) {
+    const mapA = new Map(upper.map(d => [d.time, d.value]));
+    const mapB = new Map(lower.map(d => [d.time, d.value]));
+    const times = [...new Set([...mapA.keys(), ...mapB.keys()])].sort((a, b) => a - b);
+    const pts = [];
+    for (const t of times) {
+      const va = mapA.get(t);
+      const vb = mapB.get(t);
+      if (va == null || vb == null) continue;
+      try {
+        const x  = mainChart.timeScale().timeToCoordinate(t);
+        const ya = ripsterSeries.ema34 ? ripsterSeries.ema34.priceToCoordinate(va) : null;
+        const yb = ripsterSeries.ema39 ? ripsterSeries.ema39.priceToCoordinate(vb) : null;
+        if (x == null || ya == null || yb == null) continue;
+        pts.push({ x, ya, yb });
+      } catch (e) { /* skip */ }
+    }
+    if (pts.length < 2) return;
+    let i = 0;
+    while (i < pts.length - 1) {
+      const seg = [];
+      const isAbove = pts[i].ya <= pts[i].yb;
+      seg.push(pts[i]);
+      let j = i + 1;
+      while (j < pts.length) {
+        seg.push(pts[j]);
+        if ((pts[j].ya <= pts[j].yb) !== isAbove) break;
+        j++;
+      }
+      if (seg.length >= 2) {
+        ctx.beginPath();
+        ctx.moveTo(seg[0].x, seg[0].ya);
+        for (let k = 1; k < seg.length; k++) ctx.lineTo(seg[k].x, seg[k].ya);
+        for (let k = seg.length - 1; k >= 0; k--) ctx.lineTo(seg[k].x, seg[k].yb);
+        ctx.closePath();
+        ctx.fillStyle = isAbove ? colorAbove : colorBelow;
+        ctx.fill();
+      }
+      i = j;
+    }
+  }
+
+  // Override redraw to use correct series for each band
+  function redrawFull() {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    paintBand(ctx, ripster.ema8,  ripster.ema9,  'rgba(38,166,154,0.18)', 'rgba(239,83,80,0.18)');
+    paintBandSlow(ctx, ripster.ema34, ripster.ema39, 'rgba(41,98,255,0.15)', 'rgba(156,39,176,0.15)');
+  }
+
+  // Redraw on any chart interaction
+  mainChart.timeScale().subscribeVisibleTimeRangeChange(redrawFull);
+  mainChart.subscribeCrosshairMove(redrawFull);
+
+  // Resize canvas when container resizes
+  const ro = new ResizeObserver(() => {
+    canvas.width  = container.clientWidth;
+    canvas.height = container.clientHeight;
+    redrawFull();
+  });
+  ro.observe(container);
+
+  // Initial draw (after a tick so series coords are ready)
+  setTimeout(redrawFull, 50);
 }
 
 function addEmaLine(data, color, width, lineStyle) {
@@ -294,7 +740,7 @@ function addEmaLine(data, color, width, lineStyle) {
 // ============================================================
 async function loadMarketOverview() {
   try {
-    const data = await fetch(`${API}/api/market-overview`).then(r => r.json());
+    const data = await apiFetch(`${API}/api/market-overview`);
     const idMap = { 'SPY': 'idx-spy', '^VIX': 'idx-vix', '^GSPC': 'idx-gspc', '^IXIC': 'idx-ixic', '^DJI': 'idx-dji' };
     const labels = { 'SPY': 'SPY', '^VIX': 'VIX', '^GSPC': 'S&P500', '^IXIC': 'NDX', '^DJI': 'DOW' };
     for (const [sym, elId] of Object.entries(idMap)) {
@@ -310,44 +756,112 @@ async function loadMarketOverview() {
 }
 
 // ============================================================
-// Stock List
+// Stock List — grouped sidebar
 // ============================================================
 async function loadStockList() {
-  const listEl = document.getElementById('stock-list');
-  if (!allStocks.length) listEl.innerHTML = '<div style="padding:12px;color:#787b86;font-size:12px">Loading…</div>';
   try {
-    const data = await fetch(`${API}/api/stocks`).then(r => r.json());
-    allStocks = data.filter(d => !d.error);
-    renderStockList(allStocks);
-  } catch (e) { console.error('stock list:', e); }
+    DB_LISTS = await apiFetch(`${API}/api/lists`);
+  } catch(e) { console.error('loadStockList:', e); return; }
+
+  const firstGroup = DB_LISTS[0]?.name;
+  if (firstGroup && !(firstGroup in groupExpanded)) {
+    groupExpanded[firstGroup] = true;
+  }
+  renderGroupSidebar();
+  for (const [name, expanded] of Object.entries(groupExpanded)) {
+    if (expanded && !groupStocks[name]) {
+      await loadGroupStocks(name);
+    }
+  }
 }
 
-function renderStockList(stocks) {
+async function loadGroupStocks(groupName) {
+  const grp = DB_LISTS.find(l => l.name === groupName);
+  const symbols = grp ? grp.symbols : buildGroupMap()[groupName];
+  if (!symbols || !symbols.length) return;
+  try {
+    const data = await apiFetch(`${API}/api/stocks?symbols=${symbols.join(',')}`);
+    groupStocks[groupName] = data.filter(d => !d.error);
+    const map = new Map(allStocks.map(s => [s.symbol, s]));
+    groupStocks[groupName].forEach(s => map.set(s.symbol, s));
+    allStocks = [...map.values()];
+    renderGroupSidebar();
+  } catch (e) { console.error('loadGroupStocks:', e); }
+}
+
+function renderGroupSidebar(searchQuery) {
   const listEl = document.getElementById('stock-list');
-  if (!stocks || !stocks.length) { listEl.innerHTML = '<div style="padding:12px;color:#787b86">No stocks</div>'; return; }
-  listEl.innerHTML = stocks.map(s => {
-    const chgCls = s.change_pct > 0 ? 'positive' : s.change_pct < 0 ? 'negative' : 'neutral';
-    const sign = s.change_pct > 0 ? '+' : '';
-    const active = s.symbol === currentSymbol ? ' active' : '';
+
+  if (searchQuery) {
+    const q = searchQuery.toUpperCase();
+    const hits = allStocks.filter(s => s.symbol.includes(q) || (s.name || '').toUpperCase().includes(q));
+    listEl.innerHTML = hits.length
+      ? hits.map(s => stockItemHtml(s)).join('')
+      : '<div style="padding:12px;color:#787b86;font-size:12px">No results</div>';
+    return;
+  }
+
+  listEl.innerHTML = DB_LISTS.map(lst => {
+    const groupName = lst.name;
+    const expanded  = !!groupExpanded[groupName];
+    const stocks    = groupStocks[groupName];
+    const arrow     = expanded ? '&#9660;' : '&#9654;';
+    const loading   = expanded && !stocks ? '<div class="group-loading">Loading…</div>' : '';
+    const rows      = expanded && stocks ? stocks.map(s => stockItemHtml(s)).join('') : '';
     return `
-      <div class="stock-item${active}" onclick="selectStock('${s.symbol}')">
-        <div class="si-left">
-          <span class="si-sym">${s.symbol}</span>
-          <span class="si-name">${escapeHtml(s.name || '')}</span>
-          ${s.pe ? `<span class="si-pe">P/E ${s.pe}</span>` : ''}
-        </div>
-        <div class="si-right">
-          <span class="si-price ${chgCls}">$${fmtPrice(s.price)}</span>
-          <span class="si-chg ${chgCls}">${sign}${s.change_pct.toFixed(2)}%</span>
-        </div>
-      </div>`;
+      <div class="group-header" onclick="toggleGroup('${escapeHtml(groupName)}')">
+        <span class="group-arrow">${arrow}</span>
+        <span class="group-name">${escapeHtml(groupName)}</span>
+        <span class="group-count">${lst.symbols.length}</span>
+      </div>
+      <div class="group-body${expanded ? '' : ' collapsed'}">${loading}${rows}</div>`;
   }).join('');
 }
 
+function toggleGroup(groupName) {
+  groupExpanded[groupName] = !groupExpanded[groupName];
+  renderGroupSidebar();
+  if (groupExpanded[groupName] && !groupStocks[groupName]) {
+    loadGroupStocks(groupName);
+  }
+}
+
+async function refreshOpenGroups() {
+  for (const [name, expanded] of Object.entries(groupExpanded)) {
+    if (expanded) {
+      delete groupStocks[name]; // clear cache to force re-fetch
+      await loadGroupStocks(name);
+    }
+  }
+}
+
+function stockItemHtml(s) {
+  const chgCls = s.change_pct > 0 ? 'positive' : s.change_pct < 0 ? 'negative' : 'neutral';
+  const sign   = s.change_pct > 0 ? '+' : '';
+  const active = s.symbol === currentSymbol ? ' active' : '';
+  return `
+    <div class="stock-item${active}" onclick="selectStock('${s.symbol}')">
+      <div class="si-left">
+        <span class="si-sym">${s.symbol}</span>
+        <span class="si-name">${escapeHtml(s.name || '')}</span>
+        ${s.pe ? `<span class="si-pe">P/E ${s.pe}</span>` : ''}
+      </div>
+      <div class="si-right">
+        <span class="si-price ${chgCls}">$${fmtPrice(s.price)}</span>
+        <span class="si-chg ${chgCls}">${sign}${s.change_pct.toFixed(2)}%</span>
+      </div>
+    </div>`;
+}
+
 function selectStock(symbol) {
-  document.querySelectorAll('.stock-item').forEach(el => el.classList.remove('active'));
-  const el = document.querySelector(`[onclick="selectStock('${symbol}')"]`);
-  if (el) el.classList.add('active');
+  currentSymbol = symbol;
+  // Re-render sidebar so the active state updates in-place
+  const searchVal = document.getElementById('stock-search').value.trim();
+  if (searchVal) {
+    renderGroupSidebar(searchVal.toUpperCase());
+  } else {
+    renderGroupSidebar();
+  }
   loadChartData(symbol);
 }
 
@@ -367,7 +881,7 @@ function updateChartHeader(stock) {
 // ============================================================
 async function loadSpyChart() {
   try {
-    const data = await fetch(`${API}/api/spy-chart`).then(r => r.json());
+    const data = await apiFetch(`${API}/api/spy-chart`);
     if (!data.candles || !data.candles.length) return;
 
     const cs = spyMiniChart.addCandlestickSeries({
@@ -392,7 +906,7 @@ async function loadSpyChart() {
 
 async function loadVixChart() {
   try {
-    const data = await fetch(`${API}/api/vix-chart`).then(r => r.json());
+    const data = await apiFetch(`${API}/api/vix-chart`);
     if (!data.series || !data.series.length) return;
 
     const areaSer = vixMiniChart.addAreaSeries({
@@ -482,7 +996,7 @@ function renderPredictionPanel(data, el) {
 // ============================================================
 async function loadMarketInfluence() {
   try {
-    const data = await fetch(`${API}/api/market-influence`).then(r => r.json());
+    const data = await apiFetch(`${API}/api/market-influence`);
 
     // Sectors
     const sectorsEl = document.getElementById('sectors-tab');
@@ -540,14 +1054,14 @@ async function loadMarketInfluence() {
 // ============================================================
 async function loadMarketNews() {
   try {
-    const news = await fetch(`${API}/api/news`).then(r => r.json());
+    const news = await apiFetch(`${API}/api/news`);
     document.getElementById('market-news').innerHTML = renderNewsCards(news);
   } catch (e) { console.error('news:', e); }
 }
 
 async function loadCompanyNews(symbol) {
   try {
-    const news = await fetch(`${API}/api/company-news/${symbol}`).then(r => r.json());
+    const news = await apiFetch(`${API}/api/company-news/${symbol}`);
     document.getElementById('stock-news').innerHTML = renderNewsCards(news);
   } catch (e) { console.error('company news:', e); }
 }
