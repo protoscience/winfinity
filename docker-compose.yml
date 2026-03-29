@@ -6,7 +6,7 @@ services:
     image: winfinity:latest
     container_name: winfinity
     ports:
-      - "80:5000"
+      - "8080:5000"
     environment:
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - FLASK_ENV=production
