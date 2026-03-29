@@ -70,7 +70,8 @@ def finnhub_get(path: str, params: dict = None) -> dict:
 
 
 def get_yf_ticker(symbol: str):
-    return yf.Ticker(symbol)
+    t = yf.Ticker(symbol)
+    return t
 
 
 # ---------------------------------------------------------------------------
@@ -93,36 +94,66 @@ def api_stocks():
 
     def fetch():
         result = []
+        # Batch download price history — single request, far less likely to be rate-limited
+        try:
+            hist_batch = yf.download(
+                ' '.join(symbols), period='5d', interval='1d',
+                auto_adjust=True, progress=False, threads=True,
+            )
+        except Exception:
+            hist_batch = pd.DataFrame()
+
         for sym in symbols:
             try:
-                ticker = get_yf_ticker(sym)
-                info = ticker.fast_info
-                hist = ticker.history(period='2d', interval='1d')
+                # Extract close prices from batch download
+                price, prev_close = 0.0, 0.0
+                if not hist_batch.empty:
+                    try:
+                        if len(symbols) == 1:
+                            closes = hist_batch['Close'].dropna()
+                        else:
+                            closes = hist_batch['Close'][sym].dropna()
+                        if len(closes) >= 2:
+                            price = float(closes.iloc[-1])
+                            prev_close = float(closes.iloc[-2])
+                        elif len(closes) == 1:
+                            price = float(closes.iloc[-1])
+                            prev_close = price
+                    except Exception:
+                        pass
 
-                price = float(info.last_price) if hasattr(info, 'last_price') and info.last_price else 0
-                prev_close = float(hist['Close'].iloc[-2]) if len(hist) >= 2 else price
                 change = price - prev_close
                 change_pct = (change / prev_close * 100) if prev_close else 0
 
-                # P/E ratio
-                full_info = ticker.info
-                pe = full_info.get('trailingPE') or full_info.get('forwardPE') or None
-                market_cap = full_info.get('marketCap') or 0
-                volume = full_info.get('volume') or full_info.get('regularMarketVolume') or 0
-                sector = full_info.get('sector', 'N/A')
-                name = full_info.get('shortName') or full_info.get('longName') or sym
+                # Per-ticker info for PE/name/sector (cached separately, non-critical)
+                pe = market_cap = volume = None
+                sector = 'N/A'
+                name = sym
+                try:
+                    ticker = get_yf_ticker(sym)
+                    full_info = ticker.info
+                    pe = full_info.get('trailingPE') or full_info.get('forwardPE') or None
+                    market_cap = full_info.get('marketCap') or 0
+                    volume = full_info.get('volume') or full_info.get('regularMarketVolume') or 0
+                    sector = full_info.get('sector', 'N/A')
+                    name = full_info.get('shortName') or full_info.get('longName') or sym
+                except Exception:
+                    pass
 
-                result.append({
-                    'symbol': sym,
-                    'name': name,
-                    'price': round(price, 2),
-                    'change': round(change, 2),
-                    'change_pct': round(change_pct, 2),
-                    'pe': round(pe, 2) if pe else None,
-                    'market_cap': market_cap,
-                    'volume': volume,
-                    'sector': sector,
-                })
+                if price > 0:
+                    result.append({
+                        'symbol': sym,
+                        'name': name,
+                        'price': round(price, 2),
+                        'change': round(change, 2),
+                        'change_pct': round(change_pct, 2),
+                        'pe': round(pe, 2) if pe else None,
+                        'market_cap': market_cap,
+                        'volume': volume,
+                        'sector': sector,
+                    })
+                else:
+                    result.append({'symbol': sym, 'error': 'no price data'})
             except Exception as e:
                 result.append({'symbol': sym, 'error': str(e)})
 
