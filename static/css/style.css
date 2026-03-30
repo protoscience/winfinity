@@ -74,6 +74,12 @@ body {
   font-size: 12px;
   white-space: nowrap;
   border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.idx-item:hover {
+  background: var(--bg-input, #252b3b);
+  border-color: #2962ff;
 }
 
 #topbar-right {
@@ -421,7 +427,68 @@ body {
 .card-panel { display: none; }
 .card-panel.active { display: block; }
 
-#spy-mini-chart, #vix-mini-chart { height: 180px; width: 100%; }
+/* Full-size SPY & VIX charts */
+#spy-vix-full-section {
+  padding: 0 12px 12px;
+}
+.spy-vix-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.spy-vix-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.spy-vix-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.spy-vix-header h3 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+.spy-vix-price {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.spy-vix-change {
+  font-size: 11px;
+  font-weight: 600;
+}
+#spy-full-chart, #vix-full-chart {
+  height: 300px;
+  width: 100%;
+}
+.spy-vix-periods {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.sv-period {
+  background: var(--bg-input, #252b3b);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.sv-period:hover { color: var(--text-primary); }
+.sv-period.active {
+  background: #2962ff;
+  border-color: #2962ff;
+  color: #fff;
+}
 
 /* Prediction panel */
 .prediction-loading { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
@@ -446,11 +513,25 @@ body {
 .pred-current { font-size: 12px; color: var(--text-secondary); }
 .pred-current strong { color: var(--text-primary); }
 
+.pred-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
 .pred-targets {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   margin-bottom: 10px;
+}
+.pred-targets-6m {
+  grid-template-columns: repeat(6, 1fr);
+}
+.pred-month {
+  background: var(--bg-hover);
 }
 .pred-week {
   background: var(--bg-card);
@@ -1490,8 +1571,9 @@ body {
 @media (max-width: 800px) {
   #sidebar { width: 200px; }
   #bottom-panels { grid-template-columns: 1fr; }
-  #spy-vix-section { display: none; }
+  .spy-vix-grid { grid-template-columns: 1fr; }
   #influence-section { display: none; }
+  .pred-targets-6m { grid-template-columns: repeat(3, 1fr); }
 }
 
 /* ===== Mobile (≤ 640px) ===== */

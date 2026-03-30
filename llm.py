@@ -138,7 +138,7 @@ def _openai_compat(url: str, api_key: str, model: str,
                 {'role': 'user',   'content': user},
             ],
             'response_format': {'type': 'json_object'},
-            'temperature': 0.3,
+            'temperature': 0.1,
             'max_tokens': 2048,
         }
 
@@ -160,6 +160,7 @@ def _anthropic(api_key: str, model: str, system: str, user: str) -> str | None:
         json={
             'model': model,
             'max_tokens': 2048,
+            'temperature': 0.1,
             'system': system,
             'messages': [{'role': 'user', 'content': user}],
         },
@@ -192,7 +193,7 @@ def _google(api_key: str, model: str, system: str, user: str,
             'contents': [{'parts': [{'text': user}]}],
             'generationConfig': {
                 'responseMimeType': 'application/json',
-                'temperature': 0.3,
+                'temperature': 0.1,
             },
         },
     )

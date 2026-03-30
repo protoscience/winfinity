@@ -161,14 +161,16 @@
             <span id="selected-change" class="change-badge">—</span>
           </div>
           <div id="chart-controls">
-            <button class="btn-tab active" data-period="1mo">1M</button>
+            <button class="btn-tab active" data-period="1d">1D</button>
+            <button class="btn-tab" data-period="1wk">1W</button>
+            <button class="btn-tab" data-period="1mo">1M</button>
             <button class="btn-tab" data-period="3mo">3M</button>
             <button class="btn-tab" data-period="6mo">6M</button>
             <button class="btn-tab" data-period="1y">1Y</button>
             <div class="separator"></div>
             <label class="toggle-label">
-              <input type="checkbox" id="toggle-prediction" checked />
-              Prediction
+              <input type="checkbox" id="toggle-extended" />
+              24H
             </label>
             <label class="toggle-label">
               <input type="checkbox" id="toggle-ripster" checked />
@@ -197,25 +199,45 @@
         </div>
       </section>
 
+      <!-- SPY & VIX charts — right below main chart -->
+      <section id="spy-vix-full-section">
+        <div class="spy-vix-grid">
+          <div class="spy-vix-card">
+            <div class="spy-vix-header">
+              <h3>SPY</h3>
+              <span id="spy-live-price" class="spy-vix-price">—</span>
+              <span id="spy-live-change" class="spy-vix-change">—</span>
+              <div class="spy-vix-periods">
+                <button class="sv-period active" data-chart="spy" data-period="1mo">1M</button>
+                <button class="sv-period" data-chart="spy" data-period="3mo">3M</button>
+                <button class="sv-period" data-chart="spy" data-period="6mo">6M</button>
+                <button class="sv-period" data-chart="spy" data-period="1y">1Y</button>
+              </div>
+            </div>
+            <div id="spy-full-chart"></div>
+          </div>
+          <div class="spy-vix-card">
+            <div class="spy-vix-header">
+              <h3>VIX</h3>
+              <span id="vix-live-price" class="spy-vix-price">—</span>
+              <span id="vix-live-change" class="spy-vix-change">—</span>
+              <div class="spy-vix-periods">
+                <button class="sv-period active" data-chart="vix" data-period="1mo">1M</button>
+                <button class="sv-period" data-chart="vix" data-period="3mo">3M</button>
+                <button class="sv-period" data-chart="vix" data-period="6mo">6M</button>
+                <button class="sv-period" data-chart="vix" data-period="1y">1Y</button>
+              </div>
+            </div>
+            <div id="vix-full-chart"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Bottom panels -->
       <div id="bottom-panels">
-        <!-- SPY + VIX panel -->
-        <section id="spy-vix-section" class="bottom-card">
-          <div class="card-tabs">
-            <button class="card-tab active" data-target="spy-panel">SPY</button>
-            <button class="card-tab" data-target="vix-panel">VIX</button>
-          </div>
-          <div id="spy-panel" class="card-panel active">
-            <div id="spy-mini-chart"></div>
-          </div>
-          <div id="vix-panel" class="card-panel">
-            <div id="vix-mini-chart"></div>
-          </div>
-        </section>
-
         <!-- Prediction panel -->
         <section id="prediction-section" class="bottom-card">
-          <h3>4-Week Prediction</h3>
+          <h3>Prediction</h3>
           <div id="prediction-content">
             <div class="prediction-loading">Select a stock →</div>
           </div>

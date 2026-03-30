@@ -189,6 +189,29 @@ let predictionSeries = null;
 let _lastIndicatorData = null;
 let _lastPredictionData = null;
 
+// Client-side AI prediction cache (survives browser refresh)
+const AI_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+function _aiCacheKey(symbol, provider, model) {
+  return `winfinity_ai_${symbol}_${provider}_${model}`;
+}
+function _getAiCache(symbol, provider, model) {
+  try {
+    const raw = localStorage.getItem(_aiCacheKey(symbol, provider, model));
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (Date.now() - entry.ts > AI_CACHE_TTL) {
+      localStorage.removeItem(_aiCacheKey(symbol, provider, model));
+      return null;
+    }
+    return entry.data;
+  } catch { return null; }
+}
+function _setAiCache(symbol, provider, model, data) {
+  try {
+    localStorage.setItem(_aiCacheKey(symbol, provider, model), JSON.stringify({ ts: Date.now(), data }));
+  } catch { /* quota exceeded — ignore */ }
+}
+
 // ============================================================
 // Bootstrap
 // ============================================================
@@ -196,9 +219,21 @@ document.addEventListener('DOMContentLoaded', () => {
   initCharts();
   loadMarketOverview();
   loadStockList();
-  loadSpyChart();
-  loadVixChart();
+  loadSpyChart('1mo');
+  loadVixChart('1mo');
   loadMarketInfluence();
+
+  // SPY/VIX period buttons
+  document.querySelectorAll('.sv-period').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const chart = btn.dataset.chart; // 'spy' or 'vix'
+      const period = btn.dataset.period;
+      document.querySelectorAll(`.sv-period[data-chart="${chart}"]`).forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (chart === 'spy') loadSpyChart(period);
+      else loadVixChart(period);
+    });
+  });
 
   // Period buttons
   document.querySelectorAll('.btn-tab[data-period]').forEach(btn => {
@@ -209,33 +244,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Indicator toggles
-  document.getElementById('toggle-prediction').addEventListener('change', () => {
-    if (_lastPredictionData) renderPredictionOverlay(_lastPredictionData);
-  });
-  document.getElementById('toggle-ripster').addEventListener('change', () => {
-    if (_lastIndicatorData) renderOverlays(_lastIndicatorData);
-  });
-  document.getElementById('toggle-bb').addEventListener('change', () => {
-    if (_lastIndicatorData) renderOverlays(_lastIndicatorData);
+  // Extended hours toggle — reload chart when toggled
+  document.getElementById('toggle-extended').addEventListener('change', () => {
+    loadChartData(currentSymbol);
   });
 
-  // SPY/VIX tabs
-  document.querySelectorAll('.card-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const target = btn.dataset.target;
-      document.querySelectorAll('.card-tab').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.card-panel').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(target).classList.add('active');
-      setTimeout(() => {
-        const spyEl = document.getElementById('spy-mini-chart');
-        const vixEl = document.getElementById('vix-mini-chart');
-        if (spyMiniChart) spyMiniChart.applyOptions({ width: spyEl.clientWidth });
-        if (vixMiniChart) vixMiniChart.applyOptions({ width: vixEl.clientWidth });
-      }, 50);
-    });
-  });
+  // Indicator toggles — re-render all overlays so "busy" mode recalculates
+  function _refreshAllOverlays() {
+    if (_lastIndicatorData) renderOverlays(_lastIndicatorData);
+  }
+  document.getElementById('toggle-ripster').addEventListener('change', _refreshAllOverlays);
+  document.getElementById('toggle-bb').addEventListener('change', _refreshAllOverlays);
 
   // Market influence tabs
   document.querySelectorAll('.inf-tab').forEach(btn => {
@@ -261,6 +280,19 @@ document.addEventListener('DOMContentLoaded', () => {
       panel.style.display = 'grid';
       panel.classList.add('active');
     });
+  });
+
+  // Clickable topbar indices — load them as main chart
+  const _idxClickMap = {
+    'idx-spy': 'SPY', 'idx-vix': 'VIX',
+    'idx-gspc': 'SPY', 'idx-ixic': 'QQQ', 'idx-dji': 'DIA',
+  };
+  Object.entries(_idxClickMap).forEach(([elId, sym]) => {
+    const el = document.getElementById(elId);
+    if (el) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => loadChartData(sym));
+    }
   });
 
   // Search
@@ -447,10 +479,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.target.closest('.stock-item') && window.innerWidth <= 640) closeSidebar();
   });
 
-  // Auto-refresh
-  setInterval(loadMarketOverview, 60000);
-  setInterval(refreshOpenGroups, 120000);
-  setInterval(() => loadChartData(currentSymbol), 300000);
+  // Auto-refresh — chart updates every 30s for intraday, 60s otherwise
+  setInterval(loadMarketOverview, 30000);
+  setInterval(refreshOpenGroups, 60000);
+  setInterval(() => {
+    const period = getSelectedPeriod();
+    const isIntraday = (period === '1d' || period === '1wk');
+    loadChartData(currentSymbol);
+    // Also refresh header price
+    loadMarketOverview();
+  }, 30000);
 });
 
 // ============================================================
@@ -739,21 +777,27 @@ function initCharts() {
     });
   });
 
-  // SPY mini
-  const spyEl = document.getElementById('spy-mini-chart');
-  spyMiniChart = LightweightCharts.createChart(spyEl, makeChartOpts(180, spyEl));
+  // SPY full chart
+  const spyEl = document.getElementById('spy-full-chart');
+  if (spyEl) {
+    spyMiniChart = LightweightCharts.createChart(spyEl, makeChartOpts(300, spyEl));
+  }
 
-  // VIX mini
-  const vixEl = document.getElementById('vix-mini-chart');
-  vixMiniChart = LightweightCharts.createChart(vixEl, makeChartOpts(180, vixEl));
+  // VIX full chart
+  const vixEl = document.getElementById('vix-full-chart');
+  if (vixEl) {
+    vixMiniChart = LightweightCharts.createChart(vixEl, makeChartOpts(300, vixEl));
+  }
 
-  // Resize observer — also syncs height so mobile CSS overrides are picked up
+  // Resize observer
   const ro = new ResizeObserver(() => {
     mainChart.applyOptions({ width: mainEl.clientWidth, height: mainEl.clientHeight });
     rsiChart.applyOptions({ width: rsiEl.clientWidth,  height: rsiEl.clientHeight  });
     macdChart.applyOptions({ width: macdEl.clientWidth, height: macdEl.clientHeight });
+    if (spyEl) spyMiniChart.applyOptions({ width: spyEl.clientWidth, height: spyEl.clientHeight });
+    if (vixEl) vixMiniChart.applyOptions({ width: vixEl.clientWidth, height: vixEl.clientHeight });
   });
-  [mainEl, rsiEl, macdEl].forEach(el => ro.observe(el));
+  [mainEl, rsiEl, macdEl, spyEl, vixEl].filter(Boolean).forEach(el => ro.observe(el));
 
   // Hover tooltips
   initMainTooltip();
@@ -891,15 +935,21 @@ function getSelectedPeriod() {
   return active ? active.dataset.period : '6mo';
 }
 
+function isExtendedHours() {
+  return document.getElementById('toggle-extended')?.checked || false;
+}
+
 async function loadChartData(symbol) {
   currentSymbol = symbol;
   document.getElementById('selected-symbol').textContent = symbol;
-  const period = getSelectedPeriod();
+  const period   = getSelectedPeriod();
+  const extended = isExtendedHours();
+  const extParam = extended ? '&extended=1' : '';
 
   try {
     const [candles, indicators, prediction] = await Promise.all([
-      apiFetch(`${API}/api/chart/${symbol}?period=${period}`),
-      apiFetch(`${API}/api/indicators/${symbol}`),
+      apiFetch(`${API}/api/chart/${symbol}?period=${period}${extParam}`),
+      apiFetch(`${API}/api/indicators/${symbol}?period=${period}${extParam}`),
       apiFetch(`${API}/api/prediction/${symbol}`),
     ]);
 
@@ -975,19 +1025,23 @@ function renderOverlays(data) {
   const showRipster = document.getElementById('toggle-ripster').checked;
   const showBB = document.getElementById('toggle-bb').checked;
 
+  // When both overlays are active, reduce their visual weight so candles stay prominent
+  const busy = showRipster && showBB;
+
   if (showRipster && data.ripster) {
     const r = data.ripster;
-    // Fast cloud boundary lines — thicker, fully opaque
-    ripsterSeries.ema8  = addEmaLine(r.ema8,  '#00e5c8', 2);
-    ripsterSeries.ema9  = addEmaLine(r.ema9,  '#00e5c8', 2);
+    const w = busy ? 1 : 2;
+    // Fast cloud boundary lines
+    ripsterSeries.ema8  = addEmaLine(r.ema8,  busy ? 'rgba(0,229,200,0.45)' : '#00e5c8', w);
+    ripsterSeries.ema9  = addEmaLine(r.ema9,  busy ? 'rgba(0,229,200,0.45)' : '#00e5c8', w);
     // Slow cloud boundary lines
-    ripsterSeries.ema34 = addEmaLine(r.ema34, '#4d8aff', 2);
-    ripsterSeries.ema39 = addEmaLine(r.ema39, '#4d8aff', 2);
-    // Trend filter EMA 200 — gold, prominent
-    ripsterSeries.ema200 = addEmaLine(r.ema200, '#f9a825', 2.5);
-    // Signal lines EMA 5 & 13 — subtle
-    ripsterSeries.ema5  = addEmaLine(r.ema5,  'rgba(255,255,255,0.5)', 1);
-    ripsterSeries.ema13 = addEmaLine(r.ema13, 'rgba(200,200,200,0.5)', 1);
+    ripsterSeries.ema34 = addEmaLine(r.ema34, busy ? 'rgba(77,138,255,0.45)' : '#4d8aff', w);
+    ripsterSeries.ema39 = addEmaLine(r.ema39, busy ? 'rgba(77,138,255,0.45)' : '#4d8aff', w);
+    // Trend filter EMA 200
+    ripsterSeries.ema200 = addEmaLine(r.ema200, busy ? 'rgba(249,168,37,0.5)' : '#f9a825', busy ? 1.5 : 2.5);
+    // Signal lines EMA 5 & 13 — always subtle
+    ripsterSeries.ema5  = addEmaLine(r.ema5,  'rgba(255,255,255,0.3)', 1);
+    ripsterSeries.ema13 = addEmaLine(r.ema13, 'rgba(200,200,200,0.3)', 1);
 
     // Draw filled cloud bands via canvas overlay
     drawRipsterCloud(r);
@@ -995,9 +1049,10 @@ function renderOverlays(data) {
 
   if (showBB && data.bollinger) {
     const bb = data.bollinger;
-    bbSeries.upper = addEmaLine(bb.upper, 'rgba(156,39,176,0.7)', 1);
-    bbSeries.mid   = addEmaLine(bb.mid,   'rgba(156,39,176,0.5)', 1, LightweightCharts.LineStyle.Dashed);
-    bbSeries.lower = addEmaLine(bb.lower, 'rgba(156,39,176,0.7)', 1);
+    const a = busy ? '0.35' : '0.7';
+    bbSeries.upper = addEmaLine(bb.upper, `rgba(156,39,176,${a})`, 1);
+    bbSeries.mid   = addEmaLine(bb.mid,   `rgba(156,39,176,${busy ? '0.25' : '0.5'})`, 1, LightweightCharts.LineStyle.Dashed);
+    bbSeries.lower = addEmaLine(bb.lower, `rgba(156,39,176,${a})`, 1);
   }
 }
 
@@ -1120,10 +1175,14 @@ function drawRipsterCloud(ripster) {
   function redrawFull() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // Fast cloud: teal (bullish) / red (bearish) — strong fill
-    paintBand(ctx, ripster.ema8,  ripster.ema9,  'rgba(0,229,200,0.38)', 'rgba(239,83,80,0.38)');
+    const showBB = document.getElementById('toggle-bb').checked;
+    const busy = showBB;
+    // Fast cloud: teal (bullish) / red (bearish)
+    const fastA = busy ? 0.15 : 0.38;
+    const slowA = busy ? 0.12 : 0.30;
+    paintBand(ctx, ripster.ema8,  ripster.ema9,  `rgba(0,229,200,${fastA})`, `rgba(239,83,80,${fastA})`);
     // Slow cloud: blue (bullish) / purple (bearish)
-    paintBandSlow(ctx, ripster.ema34, ripster.ema39, 'rgba(77,138,255,0.30)', 'rgba(156,39,176,0.30)');
+    paintBandSlow(ctx, ripster.ema34, ripster.ema39, `rgba(77,138,255,${slowA})`, `rgba(156,39,176,${slowA})`);
   }
 
   // Redraw on any chart interaction
@@ -1332,12 +1391,18 @@ function updateChartHeader(stock) {
 }
 
 // ============================================================
-// SPY & VIX Mini Charts
+// SPY & VIX Full Charts
 // ============================================================
-async function loadSpyChart() {
+async function loadSpyChart(period = '1mo') {
   try {
-    const data = await apiFetch(`${API}/api/spy-chart`);
+    const data = await apiFetch(`${API}/api/spy-chart?period=${period}`);
     if (!data.candles || !data.candles.length) return;
+
+    // Recreate chart to clear old series
+    const el = document.getElementById('spy-full-chart');
+    if (!el) return;
+    el.innerHTML = '';
+    spyMiniChart = LightweightCharts.createChart(el, makeChartOpts(300, el));
 
     const cs = spyMiniChart.addCandlestickSeries({
       upColor: '#26a69a', downColor: '#ef5350',
@@ -1346,30 +1411,66 @@ async function loadSpyChart() {
     });
     cs.setData(data.candles);
 
-    if (data.indicators && data.indicators.rsi && data.indicators.rsi.length) {
+    // Volume
+    const vol = spyMiniChart.addHistogramSeries({
+      priceFormat: { type: 'volume' }, priceScaleId: 'spy_vol',
+    });
+    spyMiniChart.priceScale('spy_vol').applyOptions({
+      scaleMargins: { top: 0.85, bottom: 0 }, borderVisible: false,
+    });
+    vol.setData(data.candles.map(d => ({
+      time: d.time, value: d.volume,
+      color: d.close >= d.open ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)',
+    })));
+
+    // RSI overlay
+    if (data.indicators?.rsi?.length) {
       const rsiL = spyMiniChart.addLineSeries({
         color: '#7b61ff', lineWidth: 1, priceLineVisible: false,
         priceScaleId: 'rsi_spy',
       });
-      spyMiniChart.priceScale('rsi_spy').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 }, borderVisible: false });
+      spyMiniChart.priceScale('rsi_spy').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 }, borderVisible: false,
+      });
       rsiL.setData(data.indicators.rsi);
     }
 
     spyMiniChart.timeScale().fitContent();
+
+    // Update live price header
+    const last = data.candles[data.candles.length - 1];
+    const prev = data.candles.length > 1 ? data.candles[data.candles.length - 2] : last;
+    _updateSpyVixHeader('spy', last.close, prev.close);
+
+    // Crosshair tooltip
+    spyMiniChart.subscribeCrosshairMove(param => {
+      if (!param.time || !param.seriesData?.size) {
+        _updateSpyVixHeader('spy', last.close, prev.close);
+        return;
+      }
+      const bar = param.seriesData.get(cs);
+      if (bar) _updateSpyVixHeader('spy', bar.close, bar.open);
+    });
+
   } catch (e) { console.error('spy chart:', e); }
 }
 
-async function loadVixChart() {
+async function loadVixChart(period = '1mo') {
   try {
-    const data = await apiFetch(`${API}/api/vix-chart`);
+    const data = await apiFetch(`${API}/api/vix-chart?period=${period}`);
     if (!data.series || !data.series.length) return;
+
+    // Recreate chart to clear old series
+    const el = document.getElementById('vix-full-chart');
+    if (!el) return;
+    el.innerHTML = '';
+    vixMiniChart = LightweightCharts.createChart(el, makeChartOpts(300, el));
 
     const areaSer = vixMiniChart.addAreaSeries({
       lineColor: '#ff6d00',
       topColor: 'rgba(255,109,0,0.3)',
       bottomColor: 'rgba(255,109,0,0.0)',
       lineWidth: 2,
-      priceLineVisible: false,
     });
     areaSer.setData(data.series);
 
@@ -1385,7 +1486,35 @@ async function loadVixChart() {
     ]);
 
     vixMiniChart.timeScale().fitContent();
+
+    // Update live price header
+    const last = data.series[data.series.length - 1];
+    const prev = data.series.length > 1 ? data.series[data.series.length - 2] : last;
+    _updateSpyVixHeader('vix', last.value, prev.value);
+
+    // Crosshair tooltip
+    vixMiniChart.subscribeCrosshairMove(param => {
+      if (!param.time || !param.seriesData?.size) {
+        _updateSpyVixHeader('vix', last.value, prev.value);
+        return;
+      }
+      const pt = param.seriesData.get(areaSer);
+      if (pt) _updateSpyVixHeader('vix', pt.value, last.value);
+    });
+
   } catch (e) { console.error('vix chart:', e); }
+}
+
+function _updateSpyVixHeader(which, price, ref) {
+  const priceEl  = document.getElementById(`${which}-live-price`);
+  const changeEl = document.getElementById(`${which}-live-change`);
+  if (!priceEl) return;
+  priceEl.textContent = `$${Number(price).toFixed(2)}`;
+  const chg = price - ref;
+  const pct = ref ? ((chg / ref) * 100) : 0;
+  const sign = chg >= 0 ? '+' : '';
+  changeEl.textContent = `${sign}${chg.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+  changeEl.style.color = chg >= 0 ? '#26a69a' : '#ef5350';
 }
 
 // ============================================================
@@ -1397,7 +1526,6 @@ function renderPrediction(data, symbol) {
     el.innerHTML = '<div class="prediction-loading">No prediction data</div>';
     return;
   }
-  renderPredictionOverlay(data);
   renderPredictionPanel(data, el);
 }
 
@@ -1408,9 +1536,12 @@ function renderPredictionOverlay(data) {
   }
   const show = document.getElementById('toggle-prediction').checked;
   if (show && data.prediction_series && data.prediction_series.length) {
+    const showRipster = document.getElementById('toggle-ripster').checked;
+    const showBB = document.getElementById('toggle-bb').checked;
+    const busy = [showRipster, showBB].filter(Boolean).length >= 1;
     predictionSeries = mainChart.addLineSeries({
-      color: 'rgba(249,168,37,0.9)',
-      lineWidth: 2,
+      color: busy ? 'rgba(255,235,59,0.8)' : 'rgba(249,168,37,0.9)',
+      lineWidth: busy ? 2 : 2,
       lineStyle: LightweightCharts.LineStyle.Dashed,
       priceLineVisible: false,
     });
@@ -1680,10 +1811,21 @@ async function loadLLMAnalysis(symbol, forceRefresh = false) {
     return loadOllamaAnalysis(symbol, forceRefresh);
   }
 
+  const model   = getLLMModel() || '';
   const predEl  = document.getElementById('prediction-content');
   const optsEl  = document.getElementById('options-content');
   const badge   = document.getElementById('options-direction-badge');
   const pname   = LLM_PROVIDER_NAMES[provider] || provider;
+
+  // Check client-side cache first (unless forced refresh)
+  if (!forceRefresh) {
+    const cached = _getAiCache(symbol, provider, model);
+    if (cached) {
+      renderLLMPrediction(cached);
+      renderLLMOptionsStrategy(cached);
+      return;
+    }
+  }
 
   predEl.innerHTML = `<div class="prediction-loading llm-loading">&#129302; ${pname} AI is analysing…</div>`;
   optsEl.innerHTML = `<div class="options-loading">&#129302; ${pname} AI is generating strategy…</div>`;
@@ -1693,6 +1835,7 @@ async function loadLLMAnalysis(symbol, forceRefresh = false) {
   try {
     const data = await apiFetch(url);
     if (data.error) throw new Error(data.error);
+    _setAiCache(symbol, provider, model, data);
     renderLLMPrediction(data);
     renderLLMOptionsStrategy(data);
   } catch (e) {
@@ -1708,6 +1851,16 @@ async function loadOllamaAnalysis(symbol, forceRefresh = false) {
   const predEl    = document.getElementById('prediction-content');
   const optsEl    = document.getElementById('options-content');
   const badge     = document.getElementById('options-direction-badge');
+
+  // Check client-side cache first
+  if (!forceRefresh) {
+    const cached = _getAiCache(symbol, 'ollama', model);
+    if (cached) {
+      renderLLMPrediction(cached);
+      renderLLMOptionsStrategy(cached);
+      return;
+    }
+  }
 
   predEl.innerHTML = `<div class="prediction-loading llm-loading">&#129302; Ollama (${escapeHtml(model)}) is analysing…</div>`;
   optsEl.innerHTML = `<div class="options-loading">&#129302; Ollama is generating strategy…</div>`;
@@ -1785,6 +1938,7 @@ async function loadOllamaAnalysis(symbol, forceRefresh = false) {
       } catch { return []; }
     });
 
+    _setAiCache(symbol, 'ollama', model, result);
     renderLLMPrediction(result);
     renderLLMOptionsStrategy(result);
   } catch (e) {
@@ -1829,6 +1983,17 @@ function renderLLMPrediction(data) {
     </div>`;
   }).join('');
 
+  const months = (data.monthly_targets || []).map(m => {
+    const cls  = m.change_pct >= 0 ? 'positive' : 'negative';
+    const sign = m.change_pct >= 0 ? '+' : '';
+    return `<div class="pred-week pred-month">
+      <div class="pw-label">Month ${m.month}</div>
+      <div class="pw-price ${cls}">$${fmtPrice(m.price)}</div>
+      <div class="pw-chg ${cls}">${sign}${Number(m.change_pct).toFixed(2)}%</div>
+      <div style="font-size:9px;color:#4a4e5a">${m.date}</div>
+    </div>`;
+  }).join('');
+
   const risks = (data.key_risks || []).map(r => `<span class="llm-tag llm-risk">${escapeHtml(r)}</span>`).join('');
   const cats  = (data.catalysts || []).map(c => `<span class="llm-tag llm-cat">${escapeHtml(c)}</span>`).join('');
 
@@ -1855,7 +2020,10 @@ function renderLLMPrediction(data) {
       <span class="pred-current">Confidence: <strong>${conf}%</strong></span>
       <span class="pred-current">Now: <strong>$${fmtPrice(data.current_price)}</strong></span>
     </div>
+    <div class="pred-section-label">4-Week Outlook</div>
     <div class="pred-targets">${weeks}</div>
+    ${months ? `<div class="pred-section-label" style="margin-top:10px">6-Month Outlook</div>
+    <div class="pred-targets pred-targets-6m">${months}</div>` : ''}
     <div class="pred-range">
       <span class="range-label">Target range:</span>
       <span class="bull-val">&#9650; $${fmtPrice(data.bull_target)}</span>
@@ -1873,11 +2041,7 @@ function renderLLMPrediction(data) {
     ${cats      ? `<div class="llm-tags-row"><span class="llm-tags-label">Catalysts:</span>${cats}</div>` : ''}
   `;
 
-  // Update chart overlay with LLM weekly targets
-  if (data.prediction_series && data.prediction_series.length) {
-    renderPredictionOverlay(data);
-    _lastPredictionData = data;
-  }
+  _lastPredictionData = data;
 }
 
 function renderLLMOptionsStrategy(data) {

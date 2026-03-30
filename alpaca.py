@@ -101,6 +101,7 @@ def get_latest_quote(key: str, secret: str, symbol: str) -> dict | None:
 # ── Historical Bars ─────────────────────────────────────────────────────────
 
 _PERIOD_MAP = {
+    '1d': 1, '1wk': 7,
     '1mo':  30,  '3mo': 90,  '6mo': 180,
     '1y':  365,  '2y': 730,  '5y': 1825,
 }
@@ -134,6 +135,63 @@ def get_bars(key: str, secret: str, symbol: str, period: str = '6mo') -> list[di
         except Exception:
             pass
     return sorted(bars, key=lambda x: x['time'])
+
+
+_INTRADAY_PERIOD_MAP = {
+    '1mo': 30,  '3mo': 90,  '6mo': 180,  '1y': 365,
+}
+
+_INTRADAY_TIMEFRAME = {
+    '1mo': '30Min',  '3mo': '1Hour',  '6mo': '1Hour',  '1y': '1Day',
+}
+
+
+def get_bars_extended(key: str, secret: str, symbol: str,
+                      period: str = '6mo') -> list[dict]:
+    """
+    Intraday bars (30min or 1h) that include pre-market + after-hours trading.
+    Uses SIP feed for extended-hours data.
+    Returns same shape as get_bars(): list of {time, open, high, low, close, volume}.
+    """
+    days      = _INTRADAY_PERIOD_MAP.get(period, 180)
+    timeframe = _INTRADAY_TIMEFRAME.get(period, '1Hour')
+    start     = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%dT00:00:00Z')
+    limit     = 10000
+
+    all_bars: list[dict] = []
+    page_token = None
+
+    while True:
+        params = {
+            'timeframe': timeframe, 'start': start, 'limit': min(limit, 10000),
+            'adjustment': 'all', 'feed': 'sip',
+        }
+        if page_token:
+            params['page_token'] = page_token
+
+        raw = _get(key, secret, ALPACA_DATA_URL, f'/v2/stocks/{symbol}/bars', params)
+        if not raw or 'bars' not in raw:
+            break
+
+        for b in raw['bars']:
+            try:
+                t = int(datetime.fromisoformat(b['t'].replace('Z', '+00:00')).timestamp())
+                all_bars.append({
+                    'time':   t,
+                    'open':   round(float(b['o']), 4),
+                    'high':   round(float(b['h']), 4),
+                    'low':    round(float(b['l']), 4),
+                    'close':  round(float(b['c']), 4),
+                    'volume': int(b['v']),
+                })
+            except Exception:
+                pass
+
+        page_token = raw.get('next_page_token')
+        if not page_token:
+            break
+
+    return sorted(all_bars, key=lambda x: x['time'])
 
 
 def get_bars_df(key: str, secret: str, symbol: str, period: str = '1y'):

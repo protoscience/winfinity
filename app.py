@@ -3,7 +3,7 @@ import json
 import os
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -196,64 +196,202 @@ def api_stocks():
     return jsonify(data)
 
 
-VALID_PERIODS = {'1mo', '3mo', '6mo', '1y', '2y', '5y'}
+VALID_PERIODS = {'1d', '1wk', '1mo', '3mo', '6mo', '1y', '2y', '5y'}
+
+
+def _hist_to_candles(hist) -> list[dict]:
+    """Convert a pandas DataFrame (yfinance history) to candle dicts."""
+    if hist is None or hist.empty:
+        return []
+    candles = []
+    for ts, row in hist.iterrows():
+        candles.append({
+            'time': int(ts.timestamp()),
+            'open': round(float(row['Open']), 4),
+            'high': round(float(row['High']), 4),
+            'low': round(float(row['Low']), 4),
+            'close': round(float(row['Close']), 4),
+            'volume': int(row['Volume']),
+        })
+    return candles
+
+
+def _fetch_alpaca_intraday(key, secret, symbol, days, timeframe, extended=False):
+    """Fetch intraday bars from Alpaca for 1d/1wk periods."""
+    start = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%dT00:00:00Z')
+    feed = 'sip' if extended else 'iex'
+    raw = requests.get(
+        f'{alp.ALPACA_DATA_URL}/v2/stocks/{symbol}/bars',
+        headers=alp._headers(key, secret),
+        params={'timeframe': timeframe, 'start': start, 'limit': 10000,
+                'adjustment': 'all', 'feed': feed},
+        timeout=10,
+    )
+    if not raw.ok:
+        return []
+    data = raw.json()
+    bars_list = data.get('bars', [])
+    bars = []
+    for b in bars_list:
+        try:
+            t = int(datetime.fromisoformat(b['t'].replace('Z', '+00:00')).timestamp())
+            bars.append({
+                'time': t,
+                'open': round(float(b['o']), 4),
+                'high': round(float(b['h']), 4),
+                'low': round(float(b['l']), 4),
+                'close': round(float(b['c']), 4),
+                'volume': int(b['v']),
+            })
+        except Exception:
+            pass
+    # Handle pagination
+    while data.get('next_page_token'):
+        raw = requests.get(
+            f'{alp.ALPACA_DATA_URL}/v2/stocks/{symbol}/bars',
+            headers=alp._headers(key, secret),
+            params={'timeframe': timeframe, 'start': start, 'limit': 10000,
+                    'adjustment': 'all', 'feed': feed,
+                    'page_token': data['next_page_token']},
+            timeout=10,
+        )
+        if not raw.ok:
+            break
+        data = raw.json()
+        for b in data.get('bars', []):
+            try:
+                t = int(datetime.fromisoformat(b['t'].replace('Z', '+00:00')).timestamp())
+                bars.append({
+                    'time': t,
+                    'open': round(float(b['o']), 4),
+                    'high': round(float(b['h']), 4),
+                    'low': round(float(b['l']), 4),
+                    'close': round(float(b['c']), 4),
+                    'volume': int(b['v']),
+                })
+            except Exception:
+                pass
+    return sorted(bars, key=lambda x: x['time'])
+
 
 @app.route('/api/chart/<symbol>')
 def api_chart(symbol: str):
     """OHLCV candlestick data for a symbol."""
-    symbol = symbol.upper()
-    period = freq.args.get('period', '6mo')
+    symbol   = symbol.upper()
+    period   = freq.args.get('period', '6mo')
+    extended = freq.args.get('extended', '') == '1'
     if period not in VALID_PERIODS:
         period = '6mo'
 
+    # Intraday periods use shorter intervals and cache TTL
+    _INTRADAY_PERIODS = {
+        '1d':  {'days': 1,  'alpaca_tf': '1Min',  'yf_interval': '1m',  'yf_period': '1d'},
+        '1wk': {'days': 7,  'alpaca_tf': '15Min', 'yf_interval': '15m', 'yf_period': '5d'},
+    }
+    is_intraday = period in _INTRADAY_PERIODS
+
     def fetch():
-        # Try Alpaca first (faster)
         alp_key, alp_secret = get_alpaca_creds()
+
+        if is_intraday:
+            cfg = _INTRADAY_PERIODS[period]
+            # Alpaca intraday bars
+            if alp_key and alp_secret:
+                bars = _fetch_alpaca_intraday(alp_key, alp_secret, symbol,
+                                              cfg['days'], cfg['alpaca_tf'],
+                                              extended)
+                if bars:
+                    return bars
+            # yfinance intraday fallback
+            ticker = get_yf_ticker(symbol)
+            hist = ticker.history(period=cfg['yf_period'],
+                                  interval=cfg['yf_interval'],
+                                  auto_adjust=True, prepost=extended)
+            return _hist_to_candles(hist)
+
+        # Extended hours: use intraday bars from Alpaca (SIP feed)
+        if extended and alp_key and alp_secret:
+            bars = alp.get_bars_extended(alp_key, alp_secret, symbol, period)
+            if bars:
+                return bars
+
+        # Regular hours: try Alpaca daily bars first (faster)
         if alp_key and alp_secret:
             bars = alp.get_bars(alp_key, alp_secret, symbol, period)
             if bars:
                 return bars
+
         # Fallback: yfinance
         ticker = get_yf_ticker(symbol)
-        hist = ticker.history(period=period, interval='1d', auto_adjust=True)
-        if hist.empty:
-            return []
-        candles = []
-        for ts, row in hist.iterrows():
-            t = int(ts.timestamp())
-            candles.append({
-                'time': t,
-                'open': round(float(row['Open']), 4),
-                'high': round(float(row['High']), 4),
-                'low': round(float(row['Low']), 4),
-                'close': round(float(row['Close']), 4),
-                'volume': int(row['Volume']),
-            })
-        return candles
+        if extended:
+            yf_interval = '30m' if period == '1mo' else '1h'
+            yf_period   = period if period in ('1mo', '3mo') else '3mo'
+            hist = ticker.history(period=yf_period, interval=yf_interval,
+                                  auto_adjust=True, prepost=True)
+        else:
+            hist = ticker.history(period=period, interval='1d', auto_adjust=True)
+        return _hist_to_candles(hist)
 
-    data = cached(f'chart_{symbol}_{period}', fetch, ttl=300)
+    cache_ttl = 30 if is_intraday else 300  # 30s cache for intraday, 5min for daily
+    cache_key = f'chart_{symbol}_{period}{"_ext" if extended else ""}'
+    data = cached(cache_key, fetch, ttl=cache_ttl)
     return jsonify(data)
 
 
 @app.route('/api/indicators/<symbol>')
 def api_indicators(symbol: str):
     """RSI, MACD, Ripster EMA Cloud for a symbol."""
-    symbol = symbol.upper()
+    symbol   = symbol.upper()
+    period   = freq.args.get('period', '6mo')
+    extended = freq.args.get('extended', '') == '1'
+    if period not in VALID_PERIODS:
+        period = '6mo'
+
+    _INTRADAY_CFG = {
+        '1d':  {'days': 1,  'alpaca_tf': '1Min',  'yf_interval': '1m',  'yf_period': '1d'},
+        '1wk': {'days': 7,  'alpaca_tf': '15Min', 'yf_interval': '15m', 'yf_period': '5d'},
+    }
+    is_intraday = period in _INTRADAY_CFG
 
     def fetch():
-        # Try Alpaca first
+        import pandas as pd
         alp_key, alp_secret = get_alpaca_creds()
         hist = None
-        if alp_key and alp_secret:
-            hist = alp.get_bars_df(alp_key, alp_secret, symbol, '1y')
-        if hist is None or hist.empty:
-            ticker = get_yf_ticker(symbol)
-            hist = ticker.history(period='1y', interval='1d', auto_adjust=True)
+
+        if is_intraday:
+            cfg = _INTRADAY_CFG[period]
+            # Alpaca intraday bars
+            if alp_key and alp_secret:
+                bars = _fetch_alpaca_intraday(alp_key, alp_secret, symbol,
+                                              cfg['days'], cfg['alpaca_tf'],
+                                              extended)
+                if bars:
+                    df = pd.DataFrame(bars)
+                    df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
+                    df = df.set_index('time')
+                    df.columns = [c.capitalize() for c in df.columns]
+                    hist = df
+            # yfinance intraday fallback
+            if hist is None or hist.empty:
+                ticker = get_yf_ticker(symbol)
+                hist = ticker.history(period=cfg['yf_period'],
+                                      interval=cfg['yf_interval'],
+                                      auto_adjust=True, prepost=extended)
+        else:
+            # Daily bars — use longer history for better indicator warmup
+            lookback = '1y' if period in ('1mo', '3mo', '6mo', '1y') else period
+            if alp_key and alp_secret:
+                hist = alp.get_bars_df(alp_key, alp_secret, symbol, lookback)
+            if hist is None or hist.empty:
+                ticker = get_yf_ticker(symbol)
+                hist = ticker.history(period=lookback, interval='1d', auto_adjust=True)
+
         if hist is None or hist.empty:
             return {'error': 'No data'}
         return get_all_indicators(hist)
 
-    data = cached(f'indicators_{symbol}', fetch, ttl=300)
+    cache_ttl = 30 if is_intraday else 300
+    data = cached(f'indicators_{symbol}_{period}{"_ext" if extended else ""}', fetch, ttl=cache_ttl)
     return jsonify(data)
 
 
@@ -362,9 +500,13 @@ def api_market_overview():
 @app.route('/api/spy-chart')
 def api_spy_chart():
     """SPY chart with indicators for the overview panel."""
+    period = freq.args.get('period', '6mo')
+    if period not in ('1mo', '3mo', '6mo', '1y'):
+        period = '6mo'
+
     def fetch():
         ticker = get_yf_ticker('SPY')
-        hist = ticker.history(period='6mo', interval='1d', auto_adjust=True)
+        hist = ticker.history(period=period, interval='1d', auto_adjust=True)
         if hist.empty:
             return {}
         candles = []
@@ -380,16 +522,20 @@ def api_spy_chart():
         indicators = get_all_indicators(hist)
         return {'candles': candles, 'indicators': indicators}
 
-    data = cached('spy_chart', fetch, ttl=300)
+    data = cached(f'spy_chart_{period}', fetch, ttl=300)
     return jsonify(data)
 
 
 @app.route('/api/vix-chart')
 def api_vix_chart():
     """VIX chart."""
+    period = freq.args.get('period', '6mo')
+    if period not in ('1mo', '3mo', '6mo', '1y'):
+        period = '6mo'
+
     def fetch():
         ticker = get_yf_ticker('^VIX')
-        hist = ticker.history(period='6mo', interval='1d', auto_adjust=True)
+        hist = ticker.history(period=period, interval='1d', auto_adjust=True)
         if hist.empty:
             return {}
         series = []
@@ -401,7 +547,7 @@ def api_vix_chart():
         indicators = get_all_indicators(hist)
         return {'series': series, 'indicators': indicators}
 
-    data = cached('vix_chart', fetch, ttl=300)
+    data = cached(f'vix_chart_{period}', fetch, ttl=300)
     return jsonify(data)
 
 
@@ -966,20 +1112,68 @@ def _build_ai_context(symbol: str, alp_key: str, alp_secret: str) -> dict | None
     except Exception:
         pass
 
+    # --- Historical volatility for realistic price bounds ---
+    daily_returns = hist['Close'].pct_change().dropna()
+    hist_vol_annual = float(daily_returns.std() * np.sqrt(252))  # annualised
+    hist_vol_4w     = float(daily_returns.std() * np.sqrt(20))   # 4-week
+    avg_daily_return = float(daily_returns.mean())
+    # 1-sigma expected range over 4 weeks
+    expected_4w_low  = round(last_price * (1 - hist_vol_4w), 2)
+    expected_4w_high = round(last_price * (1 + hist_vol_4w), 2)
+    # 1-sigma range over 6 months
+    hist_vol_6m = float(daily_returns.std() * np.sqrt(126))
+    expected_6m_low  = round(last_price * (1 - hist_vol_6m), 2)
+    expected_6m_high = round(last_price * (1 + hist_vol_6m), 2)
+
+    # Performance metrics
+    pct_1m  = round(float((hist['Close'].iloc[-1] / hist['Close'].iloc[-21] - 1) * 100), 2) if len(hist) > 21 else 0
+    pct_3m  = round(float((hist['Close'].iloc[-1] / hist['Close'].iloc[-63] - 1) * 100), 2) if len(hist) > 63 else 0
+    pct_6m  = round(float((hist['Close'].iloc[-1] / hist['Close'].iloc[-126] - 1) * 100), 2) if len(hist) > 126 else 0
+    pct_1y  = round(float((hist['Close'].iloc[-1] / hist['Close'].iloc[0] - 1) * 100), 2) if len(hist) > 1 else 0
+
     company_name = symbol
-    sector = 'Unknown'
-    pe_ratio = market_cap = eps = revenue_growth = next_earnings = 'N/A'
+    sector = industry = 'Unknown'
+    pe_ratio = forward_pe = peg = market_cap = eps = revenue_growth = 'N/A'
+    profit_margin = operating_margin = debt_equity = free_cash_flow = 'N/A'
+    book_value = price_to_book = dividend_yield = beta = next_earnings = 'N/A'
+    analyst_target = analyst_rec = 'N/A'
     try:
         info = get_yf_ticker(symbol).info
         company_name   = info.get('shortName', symbol)
         sector         = info.get('sector', 'Unknown')
+        industry       = info.get('industry', 'Unknown')
         pe_ratio       = round(info.get('trailingPE', 0), 1) or 'N/A'
+        fwd_pe_raw     = info.get('forwardPE', None)
+        forward_pe     = round(fwd_pe_raw, 1) if fwd_pe_raw else 'N/A'
+        peg_raw        = info.get('pegRatio', None)
+        peg            = round(peg_raw, 2) if peg_raw else 'N/A'
         market_cap_raw = info.get('marketCap', 0)
         market_cap     = (f'${market_cap_raw/1e9:.1f}B' if market_cap_raw >= 1e9
                           else f'${market_cap_raw/1e6:.0f}M' if market_cap_raw else 'N/A')
         eps            = info.get('trailingEps', 'N/A')
         rev_g          = info.get('revenueGrowth', None)
         revenue_growth = f'{rev_g*100:.1f}%' if rev_g is not None else 'N/A'
+        pm             = info.get('profitMargins', None)
+        profit_margin  = f'{pm*100:.1f}%' if pm is not None else 'N/A'
+        om             = info.get('operatingMargins', None)
+        operating_margin = f'{om*100:.1f}%' if om is not None else 'N/A'
+        de             = info.get('debtToEquity', None)
+        debt_equity    = round(de / 100, 2) if de is not None else 'N/A'
+        fcf            = info.get('freeCashflow', None)
+        if fcf is not None:
+            free_cash_flow = f'${fcf/1e9:.1f}B' if abs(fcf) >= 1e9 else f'${fcf/1e6:.0f}M'
+        bv             = info.get('bookValue', None)
+        book_value     = round(bv, 2) if bv else 'N/A'
+        pb             = info.get('priceToBook', None)
+        price_to_book  = round(pb, 2) if pb else 'N/A'
+        dy             = info.get('dividendYield', None)
+        dividend_yield = f'{dy*100:.2f}%' if dy else 'N/A'
+        bt             = info.get('beta', None)
+        beta           = round(bt, 2) if bt else 'N/A'
+        at             = info.get('targetMeanPrice', None)
+        analyst_target = f'${at:.2f}' if at else 'N/A'
+        ar             = info.get('recommendationKey', None)
+        analyst_rec    = ar.upper() if ar else 'N/A'
         next_earn      = info.get('earningsTimestamp', None)
         if next_earn:
             next_earnings = datetime.utcfromtimestamp(next_earn).strftime('%Y-%m-%d')
@@ -1033,6 +1227,7 @@ def _build_ai_context(symbol: str, alp_key: str, alp_secret: str) -> dict | None
 
     last_date = hist.index[-1]
     wdates = [(last_date + timedelta(days=w * 7)).strftime('%Y-%m-%d') for w in range(1, 5)]
+    mdates = [(last_date + timedelta(days=m * 30)).strftime('%Y-%m-%d') for m in range(1, 7)]
 
     rsi_str  = f'{last_rsi:.1f}' if last_rsi is not None else 'N/A'
     rsi_note = ('overbought' if last_rsi and last_rsi > 70
@@ -1044,27 +1239,50 @@ def _build_ai_context(symbol: str, alp_key: str, alp_secret: str) -> dict | None
     ]
 
     system_prompt = (
-        'You are a senior buy-side equity analyst combining macro-economics, geopolitics, '
-        'sector dynamics, AI/technology disruption trends, company fundamentals, '
-        'technical analysis, and options flow into a single holistic 4-week outlook. '
-        'Explicitly reason about: (1) active wars or geopolitical conflicts and their '
-        'supply-chain / risk-appetite effect on this stock; (2) AI and technology disruption '
-        'tailwinds or headwinds for this sector; (3) sector-specific regulatory, competitive, '
-        'or cyclical forces; (4) any external macro factors (Fed policy, FX, commodities, '
-        'trade tariffs) that materially benefit or block near-term growth. '
+        'You are a senior buy-side equity analyst. Your PRIMARY job is to produce '
+        'REALISTIC, GROUNDED price predictions anchored in hard data — not aspirational targets.\n\n'
+        'CRITICAL RULES FOR PRICE PREDICTIONS:\n'
+        '1. VALUATION FIRST: If the trailing P/E is already above sector average or forward P/E shows '
+        'contraction, that is BEARISH pressure — acknowledge it.\n'
+        '2. HISTORICAL VOLATILITY: You are given the stock\'s actual historical 4-week and 6-month '
+        'volatility ranges. Your price targets MUST stay within 1.5 standard deviations of current price. '
+        'Do NOT predict moves larger than what historical volatility supports.\n'
+        '3. MEAN REVERSION: Stocks that rallied significantly in the last 1-3 months often face '
+        'pullbacks. A stock up 20%+ in 3 months with a high P/E is NOT likely to keep surging.\n'
+        '4. ANALYST CONSENSUS: If wall street analyst targets are provided, your targets should be '
+        'in the same ballpark. Do not wildly deviate without clear justification.\n'
+        '5. BASE RATES: Most stocks move ±2-8% in a month and ±10-25% in 6 months. Moves beyond '
+        'this require exceptional catalysts.\n'
+        '6. BE WILLING TO SAY BEARISH: If the data points to downside, say BEARISH. Do not default '
+        'to BULLISH. Most stocks at any given time are fairly valued — NEUTRAL is a valid signal.\n\n'
+        'Combine fundamentals, macro-economics, geopolitics, sector dynamics, AI/tech disruption, '
+        'technicals, and options flow into a holistic outlook.\n'
         'Return ONLY a valid JSON object — no markdown, no code fences, no text outside the JSON.'
     )
 
-    user_prompt = f"""Analyse {symbol} ({company_name}), sector: {sector}
+    user_prompt = f"""Analyse {symbol} ({company_name}), sector: {sector}, industry: {industry}
 
 COMPANY FUNDAMENTALS:
-Market Cap: {market_cap} | P/E: {pe_ratio} | EPS: {eps} | Revenue Growth: {revenue_growth}
+Market Cap: {market_cap} | Trailing P/E: {pe_ratio} | Forward P/E: {forward_pe} | PEG Ratio: {peg}
+EPS: {eps} | Revenue Growth: {revenue_growth}
+Profit Margin: {profit_margin} | Operating Margin: {operating_margin}
+Debt/Equity: {debt_equity} | Free Cash Flow: {free_cash_flow}
+Book Value: {book_value} | Price/Book: {price_to_book}
+Dividend Yield: {dividend_yield} | Beta: {beta}
+Analyst Consensus Target: {analyst_target} | Analyst Recommendation: {analyst_rec}
 Next Earnings: {next_earnings}
 
 PRICE ACTION:
 Current: ${last_price:.2f} | 52w High: ${high_52} | 52w Low: ${low_52}
+Performance: 1M: {pct_1m}% | 3M: {pct_3m}% | 6M: {pct_6m}% | 1Y: {pct_1y}%
 Last 20 closes: {close_20d}
 Last volume: {last_vol:,} | 20d avg: {avg_vol_20:,}
+
+HISTORICAL VOLATILITY (use this to bound your predictions):
+Annualised volatility: {hist_vol_annual*100:.1f}%
+4-week 1σ range: ${expected_4w_low} — ${expected_4w_high}
+6-month 1σ range: ${expected_6m_low} — ${expected_6m_high}
+Average daily return: {avg_daily_return*100:.3f}%
 
 TECHNICALS:
 RSI(14): {rsi_str} ({rsi_note})
@@ -1088,7 +1306,8 @@ BROAD MARKET CONTEXT:
 GLOBAL MACRO & GEOPOLITICAL NEWS:
 {chr(10).join(macro_news_lines) if macro_news_lines else 'No macro news available'}
 
-Weekly target dates: {wdates[0]}, {wdates[1]}, {wdates[2]}, {wdates[3]}
+Weekly target dates (4 weeks): {wdates[0]}, {wdates[1]}, {wdates[2]}, {wdates[3]}
+Monthly target dates (6 months): {mdates[0]}, {mdates[1]}, {mdates[2]}, {mdates[3]}, {mdates[4]}, {mdates[5]}
 
 Return ONLY this JSON (no nulls — estimate all values):
 {{
@@ -1103,6 +1322,14 @@ Return ONLY this JSON (no nulls — estimate all values):
     {{"week": 2, "date": "{wdates[1]}", "price": <number>, "change_pct": <number>}},
     {{"week": 3, "date": "{wdates[2]}", "price": <number>, "change_pct": <number>}},
     {{"week": 4, "date": "{wdates[3]}", "price": <number>, "change_pct": <number>}}
+  ],
+  "monthly_targets": [
+    {{"month": 1, "date": "{mdates[0]}", "price": <number>, "change_pct": <number>}},
+    {{"month": 2, "date": "{mdates[1]}", "price": <number>, "change_pct": <number>}},
+    {{"month": 3, "date": "{mdates[2]}", "price": <number>, "change_pct": <number>}},
+    {{"month": 4, "date": "{mdates[3]}", "price": <number>, "change_pct": <number>}},
+    {{"month": 5, "date": "{mdates[4]}", "price": <number>, "change_pct": <number>}},
+    {{"month": 6, "date": "{mdates[5]}", "price": <number>, "change_pct": <number>}}
   ],
   "geopolitical_impact": "<How active conflicts, sanctions, or trade tensions specifically affect {symbol} — supply chain, demand, risk appetite>",
   "ai_tech_impact": "<How AI adoption or tech disruption acts as tailwind or headwind for {symbol} and its sector over 4 weeks>",
@@ -1152,6 +1379,7 @@ Return ONLY this JSON (no nulls — estimate all values):
         'symbol':        symbol,
         'current_price': last_price,
         'weekly_dates':  wdates,
+        'monthly_dates': mdates,
         'system_prompt': system_prompt,
         'user_prompt':   user_prompt,
     }
